@@ -5,7 +5,7 @@ use clap::Parser;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::http_client::HttpClientBuilder;
 use jsonrpsee::rpc_params;
-use jsonrpsee::server::{RpcModule, ServerBuilder};
+use jsonrpsee::server::{RpcModule, ServerBuilder, ServerConfig};
 use jsonrpsee::types::ErrorObjectOwned;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -61,7 +61,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_server() -> anyhow::Result<SocketAddr> {
-	let server = ServerBuilder::default().build("127.0.0.1:0".parse::<SocketAddr>()?).await?;
+	let config = ServerConfig::builder().enable_http3().build();
+	let server = ServerBuilder::default().set_config(config).build("127.0.0.1:34727".parse::<SocketAddr>()?).await?;
 
 	let mut module = RpcModule::new(());
 

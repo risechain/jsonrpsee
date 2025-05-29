@@ -129,10 +129,46 @@ where
 		let connection_guard = ConnectionGuard::new(self.server_cfg.max_connections as usize);
 		let listener = self.listener;
 
+		let local_addr = listener
+			.local_addr()
+			.unwrap_or_else(|_| SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 0));
+
 		let stopped = stop_handle.clone().shutdown();
 		tokio::pin!(stopped);
 
 		let (drop_on_completion, mut process_connection_awaiter) = mpsc::channel::<()>(1);
+
+		#[cfg(feature = "http3")]
+		let http3_handle = if self.server_cfg.enable_http3 {
+			tracing::debug!(target: LOG_TARGET, "Starting HTTP/3 server on {}", local_addr);
+
+			let http3_config = crate::transport::http3::Http3Config {
+				max_connections: self.server_cfg.max_connections as usize,
+				max_request_body_size: self.server_cfg.max_request_body_size,
+				max_response_body_size: self.server_cfg.max_response_body_size,
+				batch_config: self.server_cfg.batch_requests_config,
+				..Default::default()
+			};
+
+			// Start HTTP/3 server
+			match crate::transport::http3::run_http3_server(
+				local_addr,
+				methods.clone(),
+				http3_config,
+				connection_guard.clone(),
+				stop_handle.clone(),
+			)
+			.await
+			{
+				Ok(handle) => Some(handle),
+				Err(e) => {
+					tracing::warn!(target: LOG_TARGET, "Failed to start HTTP/3 server: {}", e);
+					None
+				}
+			}
+		} else {
+			None
+		};
 
 		loop {
 			match try_accept_conn(&listener, stopped).await {
@@ -162,6 +198,14 @@ where
 
 		// Drop the last Sender
 		drop(drop_on_completion);
+
+		// Wait for HTTP/3 server to shutdown
+		#[cfg(feature = "http3")]
+		if let Some(handle) = http3_handle {
+			if let Err(e) = handle.await {
+				tracing::warn!(target: LOG_TARGET, "Error waiting for HTTP/3 server to shutdown: {}", e);
+			}
+		}
 
 		// Once this channel is closed it is safe to assume that all connections have been gracefully shutdown
 		while process_connection_awaiter.recv().await.is_some() {
@@ -259,6 +303,12 @@ pub enum BatchRequestConfig {
 	Limit(u32),
 	/// The batch request is unlimited.
 	Unlimited,
+}
+
+impl Default for BatchRequestConfig {
+	fn default() -> Self {
+		Self::Limit(100) // TODO: move this to env for configurable batch request limit
+	}
 }
 
 /// Connection related state that is needed

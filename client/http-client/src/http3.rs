@@ -327,13 +327,13 @@ impl Http3Client {
 	pub async fn new(_url: &Url, config: Http3Config) -> Result<Self, Error> {
 		let mut root_store = RootCertStore::empty();
 
-		let certs = rustls_native_certs::load_native_certs()
-			.map_err(|e| Error::Http(HttpError::Stream(Box::new(std::io::Error::other(format!("{}", e))))))?;
-
-		for cert in certs {
-			root_store
-				.add(cert)
-				.map_err(|e| Error::Http(HttpError::Stream(Box::new(std::io::Error::other(format!("{}", e))))))?;
+		for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
+			root_store.add(cert).map_err(|e| {
+				Error::Http(HttpError::Stream(Box::new(std::io::Error::other(format!(
+					"Failed to add certificate to root store: {}",
+					e
+				)))))
+			})?;
 		}
 
 		let _tls_config = rustls::ClientConfig::builder().with_root_certificates(root_store).with_no_client_auth();
@@ -366,7 +366,6 @@ impl Http3Client {
 			connections: Arc::new(Mutex::new(HashMap::new())),
 		})
 	}
-
 	/// Gets a connection from the pool or creates a new one
 	///
 	/// This method handles connection pooling, health monitoring, and connection establishment.
