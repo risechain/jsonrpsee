@@ -180,7 +180,7 @@ async fn main() -> anyhow::Result<()> {
 		let mut i = 0;
 		let handle = run_server().await?;
 
-		let client = HttpClient::builder().build("http://127.0.0.1:9944").unwrap();
+		let client = HttpClient::builder().build("http://127.0.0.1:9944").await.unwrap();
 		while client.say_hello().await.is_ok() {
 			i += 1;
 		}

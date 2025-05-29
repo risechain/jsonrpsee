@@ -190,6 +190,10 @@ pub struct ServerConfig {
 	pub(crate) enable_http: bool,
 	/// Enable WS.
 	pub(crate) enable_ws: bool,
+	/// Enable HTTP/3.
+	#[cfg(feature = "http3")]
+	#[allow(dead_code)]
+	pub(crate) enable_http3: bool,
 	/// Number of messages that server is allowed to `buffer` until backpressure kicks in.
 	pub(crate) message_buffer_capacity: u32,
 	/// Ping settings.
@@ -199,7 +203,6 @@ pub struct ServerConfig {
 	/// `TCP_NODELAY` settings.
 	pub(crate) tcp_no_delay: bool,
 }
-
 /// The builder to configure and create a JSON-RPC server configuration.
 #[derive(Debug, Clone)]
 pub struct ServerConfigBuilder {
@@ -219,6 +222,9 @@ pub struct ServerConfigBuilder {
 	enable_http: bool,
 	/// Enable WS.
 	enable_ws: bool,
+	/// Enable HTTP/3.
+	#[cfg(feature = "http3")]
+	enable_http3: bool,
 	/// Number of messages that server is allowed to `buffer` until backpressure kicks in.
 	message_buffer_capacity: u32,
 	/// Ping settings.
@@ -361,6 +367,8 @@ impl Default for ServerConfigBuilder {
 			tokio_runtime: None,
 			enable_http: true,
 			enable_ws: true,
+			#[cfg(feature = "http3")]
+			enable_http3: false,
 			message_buffer_capacity: 1024,
 			ping_config: None,
 			id_provider: Arc::new(RandomIntegerIdProvider),
@@ -433,6 +441,33 @@ impl ServerConfigBuilder {
 	pub fn ws_only(mut self) -> Self {
 		self.enable_http = false;
 		self.enable_ws = true;
+		self
+	}
+
+	/// Enable HTTP/3 support for the server.
+	///
+	/// This requires the `http3` feature to be enabled.
+	///
+	/// # Example
+	///
+	/// ```no_run
+	/// use jsonrpsee_server::{ServerBuilder, ServerConfig};
+	///
+	/// #[tokio::main]
+	/// async fn main() {
+	///     let config = ServerConfig::builder()
+	///         .enable_http3()
+	///         .build();
+	///     let server = ServerBuilder::default()
+	///         .set_config(config)
+	///         .build("127.0.0.1:9944")
+	///         .await
+	///         .unwrap();
+	/// }
+	/// ```
+	#[cfg(feature = "http3")]
+	pub fn enable_http3(mut self) -> Self {
+		self.enable_http3 = true;
 		self
 	}
 
@@ -531,6 +566,8 @@ impl ServerConfigBuilder {
 			tokio_runtime: self.tokio_runtime,
 			enable_http: self.enable_http,
 			enable_ws: self.enable_ws,
+			#[cfg(feature = "http3")]
+			enable_http3: self.enable_http3,
 			message_buffer_capacity: self.message_buffer_capacity,
 			ping_config: self.ping_config,
 			id_provider: self.id_provider,

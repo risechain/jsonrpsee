@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
 	let url = format!("http://{}", addr);
 
 	// Use RPC client to get the response of `say_hello` method.
-	let client = HttpClient::builder().build(&url)?;
+	let client = HttpClient::builder().build(&url).await?;
 	// This call will be denied because only `example.com` URIs/hosts are allowed by the host filter.
 	let response = client.request::<String, _>("say_hello", rpc_params![]).await.unwrap_err();
 	println!("[main]: response: {}", response);

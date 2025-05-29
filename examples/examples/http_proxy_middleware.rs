@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 	let url = format!("http://{}", addr);
 
 	// Use RPC client to get the response of `say_hello` method.
-	let client = HttpClient::builder().build(&url)?;
+	let client = HttpClient::builder().build(&url).await?;
 	let response: String = client.request("say_hello", rpc_params![]).await?;
 	println!("[main]: response: {:?}", response);
 

@@ -228,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
 	tokio::spawn(handle.stopped());
 
 	{
-		let client = HttpClient::builder().build("http://127.0.0.1:9944").unwrap();
+		let client = HttpClient::builder().build("http://127.0.0.1:9944").await.unwrap();
 
 		// Fails because the authorization header is missing.
 		let x = client.trusted_call().await.unwrap_err();
@@ -247,7 +247,7 @@ async fn main() -> anyhow::Result<()> {
 		let mut headers = HeaderMap::new();
 		headers.insert(AUTHORIZATION, HeaderValue::from_static("don't care in this example"));
 
-		let client = HttpClient::builder().set_headers(headers).build("http://127.0.0.1:9944").unwrap();
+		let client = HttpClient::builder().set_headers(headers).build("http://127.0.0.1:9944").await.unwrap();
 
 		let x = client.trusted_call().await.unwrap();
 		tracing::info!("response: {x}");

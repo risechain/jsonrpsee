@@ -38,6 +38,7 @@ rustls = { workspace = true, default-features = false, optional = true }
 
 # ws
 soketto = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
 
 # web-sys
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -50,6 +51,7 @@ tls-rustls-platform-verifier = ["tls", "rustls-platform-verifier"]
 
 ws = [
     "base64",
+    "bytes",
     "futures-util",
     "http",
     "tokio",
