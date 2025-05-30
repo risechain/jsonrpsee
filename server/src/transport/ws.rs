@@ -5,6 +5,7 @@ use crate::future::{IntervalStream, SessionClose};
 use crate::middleware::rpc::{RpcService, RpcServiceCfg};
 use crate::server::{ConnectionState, ServerConfig, handle_rpc_call};
 use crate::{HttpBody, HttpRequest, HttpResponse, LOG_TARGET, PingConfig};
+use bytes::Bytes;
 
 use futures_util::future::{self, Either};
 use futures_util::io::{BufReader, BufWriter};
@@ -29,7 +30,7 @@ pub(crate) type Receiver = soketto::Receiver<BufReader<BufWriter<Compat<TokioIo<
 pub use soketto::handshake::http::is_upgrade_request;
 
 enum Incoming {
-	Data(Vec<u8>),
+	Data(bytes::Bytes),
 	Pong,
 }
 
@@ -99,7 +100,7 @@ where
 	let ws_stream = futures_util::stream::unfold(ws_receiver, |mut receiver| async {
 		let mut data = Vec::new();
 		match receiver.receive(&mut data).await {
-			Ok(soketto::Incoming::Data(_)) => Some((Ok(Incoming::Data(data)), receiver)),
+			Ok(soketto::Incoming::Data(_)) => Some((Ok(Incoming::Data(Bytes::from(data))), receiver)),
 			Ok(soketto::Incoming::Pong(_)) => Some((Ok(Incoming::Pong), receiver)),
 			Ok(soketto::Incoming::Closed(_)) | Err(SokettoError::Closed) => None,
 			// The closing reason is already logged by `soketto` trace log level.
@@ -269,7 +270,7 @@ enum Receive<S> {
 	ConnectionClosed,
 	Stopped,
 	Err(SokettoError, S),
-	Ok(Vec<u8>, S),
+	Ok(Bytes, S),
 }
 
 /// Attempts to read data from WebSocket fails if the server was stopped.

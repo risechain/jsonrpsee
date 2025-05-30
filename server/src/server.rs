@@ -129,10 +129,46 @@ where
 		let connection_guard = ConnectionGuard::new(self.server_cfg.max_connections as usize);
 		let listener = self.listener;
 
+		let local_addr = listener
+			.local_addr()
+			.unwrap_or_else(|_| SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), 0));
+
 		let stopped = stop_handle.clone().shutdown();
 		tokio::pin!(stopped);
 
 		let (drop_on_completion, mut process_connection_awaiter) = mpsc::channel::<()>(1);
+
+		#[cfg(feature = "http3")]
+		let http3_handle = if self.server_cfg.enable_http3 {
+			tracing::debug!(target: LOG_TARGET, "Starting HTTP/3 server on {}", local_addr);
+
+			let http3_config = crate::transport::http3::Http3Config {
+				max_connections: self.server_cfg.max_connections as usize,
+				max_request_body_size: self.server_cfg.max_request_body_size,
+				max_response_body_size: self.server_cfg.max_response_body_size,
+				batch_config: self.server_cfg.batch_requests_config,
+				..Default::default()
+			};
+
+			// Start HTTP/3 server
+			match crate::transport::http3::run_http3_server(
+				local_addr,
+				methods.clone(),
+				http3_config,
+				connection_guard.clone(),
+				stop_handle.clone(),
+			)
+			.await
+			{
+				Ok(handle) => Some(handle),
+				Err(e) => {
+					tracing::warn!(target: LOG_TARGET, "Failed to start HTTP/3 server: {}", e);
+					None
+				}
+			}
+		} else {
+			None
+		};
 
 		loop {
 			match try_accept_conn(&listener, stopped).await {
@@ -163,6 +199,14 @@ where
 		// Drop the last Sender
 		drop(drop_on_completion);
 
+		// Wait for HTTP/3 server to shutdown
+		#[cfg(feature = "http3")]
+		if let Some(handle) = http3_handle {
+			if let Err(e) = handle.await {
+				tracing::warn!(target: LOG_TARGET, "Error waiting for HTTP/3 server to shutdown: {}", e);
+			}
+		}
+
 		// Once this channel is closed it is safe to assume that all connections have been gracefully shutdown
 		while process_connection_awaiter.recv().await.is_some() {
 			// Generally, messages should not be sent across this channel,
@@ -190,6 +234,10 @@ pub struct ServerConfig {
 	pub(crate) enable_http: bool,
 	/// Enable WS.
 	pub(crate) enable_ws: bool,
+	/// Enable HTTP/3.
+	#[cfg(feature = "http3")]
+	#[allow(dead_code)]
+	pub(crate) enable_http3: bool,
 	/// Number of messages that server is allowed to `buffer` until backpressure kicks in.
 	pub(crate) message_buffer_capacity: u32,
 	/// Ping settings.
@@ -199,7 +247,6 @@ pub struct ServerConfig {
 	/// `TCP_NODELAY` settings.
 	pub(crate) tcp_no_delay: bool,
 }
-
 /// The builder to configure and create a JSON-RPC server configuration.
 #[derive(Debug, Clone)]
 pub struct ServerConfigBuilder {
@@ -219,6 +266,9 @@ pub struct ServerConfigBuilder {
 	enable_http: bool,
 	/// Enable WS.
 	enable_ws: bool,
+	/// Enable HTTP/3.
+	#[cfg(feature = "http3")]
+	enable_http3: bool,
 	/// Number of messages that server is allowed to `buffer` until backpressure kicks in.
 	message_buffer_capacity: u32,
 	/// Ping settings.
@@ -253,6 +303,12 @@ pub enum BatchRequestConfig {
 	Limit(u32),
 	/// The batch request is unlimited.
 	Unlimited,
+}
+
+impl Default for BatchRequestConfig {
+	fn default() -> Self {
+		Self::Limit(100) // TODO: move this to env for configurable batch request limit
+	}
 }
 
 /// Connection related state that is needed
@@ -361,6 +417,8 @@ impl Default for ServerConfigBuilder {
 			tokio_runtime: None,
 			enable_http: true,
 			enable_ws: true,
+			#[cfg(feature = "http3")]
+			enable_http3: false,
 			message_buffer_capacity: 1024,
 			ping_config: None,
 			id_provider: Arc::new(RandomIntegerIdProvider),
@@ -433,6 +491,33 @@ impl ServerConfigBuilder {
 	pub fn ws_only(mut self) -> Self {
 		self.enable_http = false;
 		self.enable_ws = true;
+		self
+	}
+
+	/// Enable HTTP/3 support for the server.
+	///
+	/// This requires the `http3` feature to be enabled.
+	///
+	/// # Example
+	///
+	/// ```no_run
+	/// use jsonrpsee_server::{ServerBuilder, ServerConfig};
+	///
+	/// #[tokio::main]
+	/// async fn main() {
+	///     let config = ServerConfig::builder()
+	///         .enable_http3()
+	///         .build();
+	///     let server = ServerBuilder::default()
+	///         .set_config(config)
+	///         .build("127.0.0.1:9944")
+	///         .await
+	///         .unwrap();
+	/// }
+	/// ```
+	#[cfg(feature = "http3")]
+	pub fn enable_http3(mut self) -> Self {
+		self.enable_http3 = true;
 		self
 	}
 
@@ -531,6 +616,8 @@ impl ServerConfigBuilder {
 			tokio_runtime: self.tokio_runtime,
 			enable_http: self.enable_http,
 			enable_ws: self.enable_ws,
+			#[cfg(feature = "http3")]
+			enable_http3: self.enable_http3,
 			message_buffer_capacity: self.message_buffer_capacity,
 			ping_config: self.ping_config,
 			id_provider: self.id_provider,

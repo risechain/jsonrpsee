@@ -153,6 +153,7 @@ fn default_port(scheme: Option<&str>) -> Option<u16> {
 		Some("http") | Some("ws") => Some(80),
 		Some("https") | Some("wss") => Some(443),
 		Some("ftp") => Some(21),
+		Some("http3") => Some(443),
 		_ => None,
 	}
 }

@@ -15,11 +15,12 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+/// RPC service that wraps an HTTP transport client and implements the RPC service trait.
 pub struct RpcService<HttpMiddleware> {
 	service: Arc<HttpTransportClient<HttpMiddleware>>,
 }
-
 impl<HttpMiddleware> RpcService<HttpMiddleware> {
+	/// Creates a new RPC service with the given HTTP transport client.
 	pub fn new(service: HttpTransportClient<HttpMiddleware>) -> Self {
 		Self { service: Arc::new(service) }
 	}

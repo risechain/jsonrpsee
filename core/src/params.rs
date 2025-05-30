@@ -41,11 +41,8 @@ mod params_builder {
 	/// Generic parameter builder that serializes parameters to bytes.
 	/// This produces a JSON compatible String.
 	///
-	/// The implementation relies on `Vec<u8>` to hold the serialized
-	/// parameters in memory for the following reasons:
-	///   1. Other serialization methods than `serde_json::to_writer` would internally
-	///      have an extra heap allocation for temporarily holding the value in memory.
-	///   2. `io::Write` is not implemented for `String` required for serialization.
+	/// The implementation uses a combination of Vec<u8> (for serialization) and
+	/// bytes::Bytes (for zero-copy sharing) to efficiently handle parameters.
 	#[derive(Debug, Clone)]
 	pub(crate) struct ParamsBuilder {
 		bytes: Vec<u8>,
@@ -70,7 +67,7 @@ mod params_builder {
 			Self::new('{', '}')
 		}
 
-		/// Initialize the internal vector if it is empty:
+		/// Initialize the internal BytesMut if it is empty:
 		///  - allocate [`PARAM_BYTES_CAPACITY`] to avoid resizing
 		///  - add the `start` character.
 		///
@@ -117,11 +114,13 @@ mod params_builder {
 			if self.bytes[idx] == b',' {
 				self.bytes[idx] = self.end as u8;
 			} else {
-				self.bytes.push(self.end as u8);
+				self.bytes.extend_from_slice(&[self.end as u8]);
 			}
 
+			let bytes = bytes::Bytes::from(self.bytes);
+
 			// Safety: This is safe because JSON does not emit invalid UTF-8.
-			let json_str = unsafe { String::from_utf8_unchecked(self.bytes) };
+			let json_str = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
 			Some(RawValue::from_string(json_str).expect("Valid JSON String; qed"))
 		}
 	}

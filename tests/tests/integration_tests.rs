@@ -284,7 +284,7 @@ async fn http_method_call_works() {
 
 	let server_addr = server().await;
 	let uri = format!("http://{}", server_addr);
-	let client = HttpClientBuilder::default().build(&uri).unwrap();
+	let client = HttpClientBuilder::default().build(&uri).await.unwrap();
 	let response: String = client.request("say_hello", rpc_params![]).await.unwrap();
 	assert_eq!(&response, "hello");
 }
@@ -295,7 +295,7 @@ async fn http_method_call_str_id_works() {
 
 	let server_addr = server().await;
 	let uri = format!("http://{}", server_addr);
-	let client = HttpClientBuilder::default().id_format(IdKind::String).build(&uri).unwrap();
+	let client = HttpClientBuilder::default().id_format(IdKind::String).build(&uri).await.unwrap();
 	let response: String = client.request("say_hello", rpc_params![]).await.unwrap();
 	assert_eq!(&response, "hello");
 }
@@ -430,7 +430,7 @@ async fn ws_making_more_requests_than_allowed_should_not_deadlock() {
 async fn https_works() {
 	init_logger();
 
-	let client = HttpClientBuilder::default().build("https://kusama-rpc.polkadot.io").unwrap();
+	let client = HttpClientBuilder::default().build("https://kusama-rpc.polkadot.io").await.unwrap();
 	let response: String = client.request("system_chain", rpc_params![]).await.unwrap();
 	assert_eq!(&response, "Kusama");
 }
@@ -777,7 +777,7 @@ async fn http_batch_works() {
 
 	let server_addr = server().await;
 	let server_url = format!("http://{}", server_addr);
-	let client = HttpClientBuilder::default().build(&server_url).unwrap();
+	let client = HttpClientBuilder::default().build(&server_url).await.unwrap();
 
 	let mut batch = BatchRequestBuilder::new();
 	batch.insert("say_hello", rpc_params![]).unwrap();
@@ -1133,7 +1133,7 @@ async fn http_host_filtering_wildcard_works() {
 	let _handle = server.start(module);
 
 	let server_url = format!("http://{}", addr);
-	let client = HttpClientBuilder::default().build(&server_url).unwrap();
+	let client = HttpClientBuilder::default().build(&server_url).await.unwrap();
 
 	assert!(client.request::<String, ArrayParams>("say_hello", rpc_params![]).await.is_ok());
 }
@@ -1156,7 +1156,7 @@ async fn deny_invalid_host() {
 	// HTTP
 	{
 		let server_url = format!("http://{}", addr);
-		let client = HttpClientBuilder::default().build(&server_url).unwrap();
+		let client = HttpClientBuilder::default().build(&server_url).await.unwrap();
 		assert!(client.request::<String, _>("say_hello", rpc_params![]).await.is_err());
 	}
 
@@ -1188,7 +1188,7 @@ async fn disable_host_filter_works() {
 	// HTTP
 	{
 		let server_url = format!("http://{}", addr);
-		let client = HttpClientBuilder::default().build(&server_url).unwrap();
+		let client = HttpClientBuilder::default().build(&server_url).await.unwrap();
 		assert!(client.request::<String, _>("say_hello", rpc_params![]).await.is_ok());
 	}
 
@@ -1437,7 +1437,7 @@ async fn run_shutdown_test(transport: &str) {
 			run_shutdown_test_inner(ws, handle, call_answered, call_ack).await
 		}
 		"http" => {
-			let http = Arc::new(HttpClientBuilder::default().build(format!("http://{addr}")).unwrap());
+			let http = Arc::new(HttpClientBuilder::default().build(format!("http://{addr}")).await.unwrap());
 			run_shutdown_test_inner(http, handle, call_answered, call_ack).await
 		}
 		_ => unreachable!("Only `http` and `ws` supported"),
@@ -1571,8 +1571,9 @@ async fn http_connection_guard_works() {
 
 	let waiting_calls: Vec<_> = (0..2)
 		.map(|_| {
-			let client = HttpClientBuilder::default().build(&server_url).unwrap();
+			let url = server_url.clone();
 			tokio::spawn(async move {
+				let client = HttpClientBuilder::default().build(&url).await.unwrap();
 				let _ = client.request::<bool, ArrayParams>("wait_until", rpc_params!()).await;
 			})
 		})
@@ -1584,7 +1585,7 @@ async fn http_connection_guard_works() {
 
 	// Assert that two calls are waiting to be answered and the current one.
 	{
-		let client = HttpClientBuilder::default().build(&server_url).unwrap();
+		let client = HttpClientBuilder::default().build(&server_url).await.unwrap();
 		let conn_count = client.request::<usize, ArrayParams>("connection_count", rpc_params!()).await.unwrap();
 		assert_eq!(conn_count, 3);
 	}
@@ -1595,7 +1596,7 @@ async fn http_connection_guard_works() {
 
 	// Assert that connection count is back to 1.
 	{
-		let client = HttpClientBuilder::default().build(&server_url).unwrap();
+		let client = HttpClientBuilder::default().build(&server_url).await.unwrap();
 		let conn_count = client.request::<usize, ArrayParams>("connection_count", rpc_params!()).await.unwrap();
 		assert_eq!(conn_count, 1);
 	}

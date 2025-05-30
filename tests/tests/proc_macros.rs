@@ -383,7 +383,7 @@ async fn subscriptions_do_not_work_for_http_servers() {
 	let htserver_url = format!("http://{}", addr);
 	let _handle = htserver.start(RpcServerImpl.into_rpc());
 
-	let htclient = HttpClientBuilder::default().build(&htserver_url).unwrap();
+	let htclient = HttpClientBuilder::default().build(&htserver_url).await.unwrap();
 
 	assert_eq!(htclient.sync_method().await.unwrap(), 10);
 	assert!(htclient.sub().await.is_err());

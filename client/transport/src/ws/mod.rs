@@ -31,6 +31,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use base64::Engine;
+use bytes::Bytes;
 use futures_util::io::{BufReader, BufWriter};
 use jsonrpsee_core::Cow;
 use jsonrpsee_core::TEN_MB_SIZE_BYTES;
@@ -294,7 +295,7 @@ where
 					let s = String::from_utf8(message).map_err(|err| WsError::Connection(Utf8(err.utf8_error())))?;
 					Ok(ReceivedMessage::Text(s))
 				}
-				Incoming::Data(Data::Binary(_)) => Ok(ReceivedMessage::Bytes(message)),
+				Incoming::Data(Data::Binary(_)) => Ok(ReceivedMessage::Bytes(Bytes::from(message))),
 				Incoming::Pong(_) => Ok(ReceivedMessage::Pong),
 				Incoming::Closed(c) => Err(WsError::Closed(c)),
 			}
