@@ -17,25 +17,36 @@ publish = true
 workspace = true
 
 [dependencies]
+bytes = { workspace = true }
 futures-util = { workspace = true, features = ["io", "async-await-macro"] }
 http = { workspace = true }
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio", "service", "tokio", "server-auto"] }
 jsonrpsee-core = { workspace = true, features = ["server", "http-helpers"] }
 jsonrpsee-types = { workspace = true }
+quinn = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
 pin-project = "1.1.3"
 route-recognizer = "0.3.1"
 serde = "1"
 serde_json = { version = "1", features = ["raw_value"] }
 soketto = { version = "0.8.1", features = ["http"] }
 thiserror = "2"
+rand = { workspace = true }
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
 tokio = { version = "1.23.1", features = ["net", "rt-multi-thread", "macros", "time"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tokio-stream = { version = "0.1.7", features = ["sync"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
+
+[features]
+http3 = ["h3", "h3-quinn", "quinn", "rcgen", "rustls", "rustls-pemfile"]
 
 [dev-dependencies]
 jsonrpsee-test-utils = { path = "../test-utils" }

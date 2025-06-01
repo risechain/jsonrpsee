@@ -198,8 +198,8 @@ pub trait TransportSenderT: 'static {
 pub enum ReceivedMessage {
 	/// Incoming packet contains plain `String` data.
 	Text(String),
-	/// Incoming packet contains bytes.
-	Bytes(Vec<u8>),
+	/// Incoming packet contains bytes using zero-copy Bytes.
+	Bytes(bytes::Bytes),
 	/// Incoming `Pong` frame as a reply to a previously submitted `Ping` frame.
 	Pong,
 }

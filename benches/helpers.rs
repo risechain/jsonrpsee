@@ -191,6 +191,30 @@ fn gen_rpc_module() -> jsonrpsee::RpcModule<()> {
 	module
 }
 
+/// Run jsonrpsee HTTP/3 server for benchmarks.
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+pub async fn http3_server(handle: tokio::runtime::Handle) -> (String, jsonrpsee::server::ServerHandle) {
+	use jsonrpsee::server::{ServerBuilder, ServerConfig};
+
+	let config = ServerConfig::builder()
+		.max_request_body_size(u32::MAX)
+		.max_response_body_size(u32::MAX)
+		.max_connections(10 * 1024)
+		.custom_tokio_runtime(handle)
+		.enable_http3()
+		.build();
+
+	println!("HTTP/3 enabled: {:?}", config);
+
+	let server = ServerBuilder::default().set_config(config).build("127.0.0.1:0").await.unwrap();
+
+	let module = gen_rpc_module();
+
+	let addr = server.local_addr().unwrap();
+	let handle = server.start(module);
+	(format!("http://{}", addr), handle)
+}
+
 pub mod fixed_client {
 	use jsonrpsee_v0_20::client_transport::ws::{Url, WsTransportClientBuilder};
 	use jsonrpsee_v0_20::ws_client::{WsClient, WsClientBuilder};
@@ -208,6 +232,25 @@ pub mod fixed_client {
 			.max_concurrent_requests(1024 * 1024)
 			.set_headers(headers)
 			.build(url)
+			.unwrap()
+	}
+
+	#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+	pub(crate) async fn http3_client(url: &str, headers: HeaderMap) -> jsonrpsee_v0_20_http_client::HttpClient {
+		use jsonrpsee_v0_20_http_client::HttpClientBuilder;
+
+		// For benchmarks, we're using the v0.20 client with simulated HTTP/3 support
+		let url = url.replace("http3://", "http://");
+
+		let mut http3_headers = headers.clone();
+		http3_headers.insert("x-simulated-http3", "true".parse().unwrap());
+
+		HttpClientBuilder::default()
+			.max_request_size(u32::MAX)
+			.max_response_size(u32::MAX)
+			.max_concurrent_requests(1024 * 1024)
+			.set_headers(http3_headers)
+			.build(&url)
 			.unwrap()
 	}
 

@@ -7,7 +7,10 @@
 // the JSON-RPC request id to a value that might have already been used.
 
 use base64::Engine;
-use hyper::body::Bytes;
+use bytes::Bytes;
+use http_body;
+use http_body::Body as HttpBody;
+use http_body_util;
 use hyper::http::{HeaderMap, HeaderValue};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -15,17 +18,19 @@ use hyper_util::rt::TokioExecutor;
 use jsonrpsee_core::BoxError;
 use jsonrpsee_core::{
 	TEN_MB_SIZE_BYTES,
-	http_helpers::{self, HttpError},
+	http_helpers::{self, Body, HttpError},
 };
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+#[cfg(feature = "http3")]
+use std::time::Duration;
 use thiserror::Error;
 use tower::layer::util::Identity;
 use tower::{Layer, Service, ServiceExt};
 use url::Url;
 
-use crate::{HttpBody, HttpRequest, HttpResponse};
+use crate::{HttpRequest, HttpResponse};
 
 #[cfg(feature = "tls")]
 use crate::{CertificateStore, CustomCertStore};
@@ -34,12 +39,15 @@ const CONTENT_TYPE_JSON: &str = "application/json";
 
 /// Wrapper over HTTP transport and connector.
 #[derive(Debug)]
-pub enum HttpBackend<B = HttpBody> {
+pub enum HttpBackend<B = http_body_util::Full<Bytes>> {
 	/// Hyper client with https connector.
 	#[cfg(feature = "tls")]
 	Https(Client<hyper_rustls::HttpsConnector<HttpConnector>, B>),
 	/// Hyper client with http connector.
 	Http(Client<HttpConnector, B>),
+	/// HTTP/3 client implementation.
+	#[cfg(feature = "http3")]
+	Http3(crate::Http3Client),
 }
 
 impl<B> Clone for HttpBackend<B> {
@@ -48,37 +56,93 @@ impl<B> Clone for HttpBackend<B> {
 			Self::Http(inner) => Self::Http(inner.clone()),
 			#[cfg(feature = "tls")]
 			Self::Https(inner) => Self::Https(inner.clone()),
+			#[cfg(feature = "http3")]
+			Self::Http3(inner) => Self::Http3(inner.clone()),
 		}
 	}
 }
 
-impl<B> tower::Service<HttpRequest<B>> for HttpBackend<B>
-where
-	B: http_body::Body<Data = Bytes> + Send + Unpin + 'static,
-	B::Data: Send,
-	B::Error: Into<BoxError>,
-{
-	type Response = HttpResponse<hyper::body::Incoming>;
+impl tower::Service<HttpRequest<Body>> for HttpBackend<http_body_util::Full<Bytes>> {
+	type Response = HttpResponse<http_body_util::Full<Bytes>>;
 	type Error = Error;
 	type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
 	fn poll_ready(&mut self, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		match self {
-			Self::Http(inner) => inner.poll_ready(ctx),
+			Self::Http(inner) => inner.poll_ready(ctx).map_err(|e| Error::Http(HttpError::Stream(Box::new(e)))),
 			#[cfg(feature = "tls")]
-			Self::Https(inner) => inner.poll_ready(ctx),
+			Self::Https(inner) => inner.poll_ready(ctx).map_err(|e| Error::Http(HttpError::Stream(Box::new(e)))),
+			#[cfg(feature = "http3")]
+			Self::Http3(inner) => inner.poll_ready(ctx).map_err(|e| Error::Http(HttpError::Stream(Box::new(e)))),
 		}
-		.map_err(|e| Error::Http(HttpError::Stream(e.into())))
 	}
 
-	fn call(&mut self, req: HttpRequest<B>) -> Self::Future {
-		let resp = match self {
-			Self::Http(inner) => inner.call(req),
-			#[cfg(feature = "tls")]
-			Self::Https(inner) => inner.call(req),
-		};
+	fn call(&mut self, req: HttpRequest<Body>) -> Self::Future {
+		let this = self.clone();
 
-		Box::pin(async move { resp.await.map_err(|e| Error::Http(HttpError::Stream(e.into()))) })
+		Box::pin(async move {
+			match this {
+				Self::Http(mut inner) => {
+					let (parts, body) = req.into_parts();
+
+					let bytes = if HttpBody::size_hint(&body).exact() == Some(0) {
+						Bytes::new()
+					} else {
+						match http_body_util::BodyExt::collect(body).await {
+							Ok(collected) => collected.to_bytes(),
+							Err(e) => {
+								return Err(Error::Http(HttpError::Stream(e)));
+							}
+						}
+					};
+
+					let full_body = http_body_util::Full::new(bytes);
+					let http_req = HttpRequest::from_parts(parts, full_body);
+
+					let resp = inner.call(http_req).await.map_err(|e| Error::Http(HttpError::Stream(Box::new(e))))?;
+					let (parts, body) = resp.into_parts();
+					let bytes = match http_body_util::BodyExt::collect(body).await {
+						Ok(collected) => collected.to_bytes(),
+						Err(e) => {
+							return Err(Error::Http(HttpError::Stream(e.into())));
+						}
+					};
+					let full_body = http_body_util::Full::new(bytes);
+					Ok(HttpResponse::from_parts(parts, full_body))
+				}
+				#[cfg(feature = "tls")]
+				Self::Https(mut inner) => {
+					let (parts, body) = req.into_parts();
+
+					let bytes = if HttpBody::size_hint(&body).exact() == Some(0) {
+						Bytes::new()
+					} else {
+						match http_body_util::BodyExt::collect(body).await {
+							Ok(collected) => collected.to_bytes(),
+							Err(e) => {
+								return Err(Error::Http(HttpError::Stream(e)));
+							}
+						}
+					};
+
+					let full_body = http_body_util::Full::new(bytes);
+					let http_req = HttpRequest::from_parts(parts, full_body);
+
+					let resp = inner.call(http_req).await.map_err(|e| Error::Http(HttpError::Stream(Box::new(e))))?;
+					let (parts, body) = resp.into_parts();
+					let bytes = match http_body_util::BodyExt::collect(body).await {
+						Ok(collected) => collected.to_bytes(),
+						Err(e) => {
+							return Err(Error::Http(HttpError::Stream(e.into())));
+						}
+					};
+					let full_body = http_body_util::Full::new(bytes);
+					Ok(HttpResponse::from_parts(parts, full_body))
+				}
+				#[cfg(feature = "http3")]
+				Self::Http3(mut inner) => inner.call(req).await,
+			}
+		})
 	}
 }
 
@@ -98,6 +162,14 @@ pub struct HttpTransportClientBuilder<L> {
 	pub(crate) service_builder: tower::ServiceBuilder<L>,
 	/// TCP_NODELAY
 	pub(crate) tcp_no_delay: bool,
+	/// Enable HTTP/3 support
+	#[cfg(feature = "http3")]
+	pub(crate) enable_http3: bool,
+	/// HTTP/3 workload profile for optimized performance
+	#[cfg(feature = "http3")]
+	pub(crate) http3_workload_profile: Option<crate::http3::WorkloadProfile>,
+	#[cfg(feature = "http3")]
+	pub(crate) http3_certificate_verification_mode: Option<crate::http3::CertificateVerificationMode>,
 }
 
 impl Default for HttpTransportClientBuilder<Identity> {
@@ -117,11 +189,34 @@ impl HttpTransportClientBuilder<Identity> {
 			headers: HeaderMap::new(),
 			service_builder: tower::ServiceBuilder::new(),
 			tcp_no_delay: true,
+			#[cfg(feature = "http3")]
+			enable_http3: false,
+			#[cfg(feature = "http3")]
+			http3_workload_profile: None,
+			#[cfg(feature = "http3")]
+			http3_certificate_verification_mode: None,
 		}
 	}
 }
 
 impl<L> HttpTransportClientBuilder<L> {
+	#[cfg(feature = "http3")]
+	/// Enable HTTP/3 support.
+	///
+	/// URLs with the `http3://` scheme will be handled by the HTTP/3 client implementation.
+	pub fn enable_http3(mut self) -> Self {
+		self.enable_http3 = true;
+		self
+	}
+
+	/// Set the HTTP/3 workload profile for optimized performance.
+	///
+	#[cfg(feature = "http3")]
+	pub fn with_http3_workload_profile(mut self, profile: crate::http3::WorkloadProfile) -> Self {
+		self.http3_workload_profile = Some(profile);
+		self
+	}
+
 	/// See docs [`crate::HttpClientBuilder::with_custom_cert_store`] for more information.
 	#[cfg(feature = "tls")]
 	pub fn with_custom_cert_store(mut self, cfg: CustomCertStore) -> Self {
@@ -167,11 +262,17 @@ impl<L> HttpTransportClientBuilder<L> {
 			max_response_size: self.max_response_size,
 			service_builder: service,
 			tcp_no_delay: self.tcp_no_delay,
+			#[cfg(feature = "http3")]
+			enable_http3: self.enable_http3,
+			#[cfg(feature = "http3")]
+			http3_workload_profile: self.http3_workload_profile,
+			#[cfg(feature = "http3")]
+			http3_certificate_verification_mode: self.http3_certificate_verification_mode,
 		}
 	}
 
 	/// Build a [`HttpTransportClient`].
-	pub fn build<S, B>(self, target: impl AsRef<str>) -> Result<HttpTransportClient<S>, Error>
+	pub async fn build<S, B>(self, target: impl AsRef<str>) -> Result<HttpTransportClient<S>, Error>
 	where
 		L: Layer<HttpBackend, Service = S>,
 		S: Service<HttpRequest, Response = HttpResponse<B>, Error = Error> + Clone,
@@ -179,15 +280,20 @@ impl<L> HttpTransportClientBuilder<L> {
 		B::Data: Send,
 		B::Error: Into<BoxError>,
 	{
-		let Self {
-			#[cfg(feature = "tls")]
-			certificate_store,
-			max_request_size,
-			max_response_size,
-			headers,
-			service_builder,
-			tcp_no_delay,
-		} = self;
+		#[allow(unused_mut)]
+		let mut max_request_size = self.max_request_size;
+		#[allow(unused_mut)]
+		let mut max_response_size = self.max_response_size;
+		#[allow(unused_mut)]
+		let mut headers = self.headers;
+		#[allow(unused_mut)]
+		let mut service_builder = self.service_builder;
+		#[allow(unused_mut)]
+		let mut tcp_no_delay = self.tcp_no_delay;
+
+		#[cfg(feature = "tls")]
+		let certificate_store = self.certificate_store;
+
 		let mut url = Url::parse(target.as_ref()).map_err(|e| Error::Url(format!("Invalid URL: {e}")))?;
 
 		if url.host_str().is_none() {
@@ -233,10 +339,63 @@ impl<L> HttpTransportClientBuilder<L> {
 
 				HttpBackend::Https(Client::builder(TokioExecutor::new()).build(https_conn))
 			}
+			#[cfg(feature = "http3")]
+			"http3" => {
+				#[cfg(feature = "http3")]
+				let enable_http3 = self.enable_http3;
+
+				if !enable_http3 {
+					return Err(Error::Url(
+						"HTTP/3 support is not enabled. Use enable_http3() method to enable it.".into(),
+					));
+				}
+
+				let http3_config = match self.http3_workload_profile {
+					Some(profile) => {
+						let mut config = crate::Http3Config::for_workload(profile);
+						config.max_request_body_size = max_request_size as usize;
+						config.max_response_body_size = max_response_size as usize;
+						config
+					}
+					None => crate::Http3Config {
+						max_concurrent_requests: 100,
+						request_timeout: Some(std::time::Duration::from_secs(60)),
+						max_request_body_size: max_request_size as usize,
+						max_response_body_size: max_response_size as usize,
+						enable_0rtt: true,
+						max_idle_timeout: Duration::from_secs(30),
+						keep_alive_interval: Some(Duration::from_secs(5)),
+						max_connections_per_host: 8,
+						connection_idle_timeout: Duration::from_secs(60),
+						enable_adaptive_flow_control: true,
+						enable_performance_optimizations: true,
+						max_concurrent_streams_multiplier: 2,
+						receive_window_size: 16 * 1024 * 1024,
+						send_buffer_size: 8 * 1024 * 1024,
+						enable_bbr_congestion_control: true,
+						initial_rtt_ms: 50,
+						buffer_growth_factor: 2,
+						certificate_verification_mode: self
+							.http3_certificate_verification_mode
+							.unwrap_or(crate::http3::CertificateVerificationMode::Standard),
+					},
+				};
+
+				let http3_client = crate::Http3Client::new(&url, http3_config).await.map_err(|e| match e {
+					Error::Url(msg) => Error::Url(msg),
+					_ => Error::Http(jsonrpsee_core::http_helpers::HttpError::Stream(Box::new(e))),
+				})?;
+
+				HttpBackend::Http3(http3_client)
+			}
 			_ => {
-				#[cfg(feature = "tls")]
+				#[cfg(all(feature = "tls", feature = "http3"))]
+				let err = "URL scheme not supported, expects 'http', 'https', or 'http3'";
+				#[cfg(all(feature = "tls", not(feature = "http3")))]
 				let err = "URL scheme not supported, expects 'http' or 'https'";
-				#[cfg(not(feature = "tls"))]
+				#[cfg(all(not(feature = "tls"), feature = "http3"))]
+				let err = "URL scheme not supported, expects 'http' or 'http3'";
+				#[cfg(not(any(feature = "tls", feature = "http3")))]
 				let err = "URL scheme not supported, expects 'http'";
 				return Err(Error::Url(err.into()));
 			}
@@ -318,7 +477,8 @@ where
 	}
 
 	/// Send serialized message and wait until all bytes from the HTTP message body have been read.
-	pub(crate) async fn send_and_read_body(&self, body: String) -> Result<Vec<u8>, Error> {
+	/// Uses zero-copy abstractions with bytes::Bytes for improved performance.
+	pub(crate) async fn send_and_read_body(&self, body: String) -> Result<Bytes, Error> {
 		let response = self.inner_send(body).await?;
 
 		let (parts, body) = response.into_parts();
@@ -359,6 +519,14 @@ pub enum Error {
 	/// Invalid certificate store.
 	#[error("Invalid certificate store")]
 	InvalidCertficateStore,
+
+	/// Request timed out.
+	#[error("Request timed out")]
+	RequestTimeout,
+
+	/// Request timed out (legacy).
+	#[error("Request timed out")]
+	Timeout,
 }
 
 #[cfg(test)]
@@ -367,67 +535,89 @@ mod tests {
 
 	#[test]
 	fn invalid_http_url_rejected() {
-		let err = HttpTransportClientBuilder::new().build("ws://localhost:9933").unwrap_err();
+		let err = tokio::runtime::Runtime::new()
+			.unwrap()
+			.block_on(async { HttpTransportClientBuilder::new().build("ws://localhost:9933").await.unwrap_err() });
 		assert!(matches!(err, Error::Url(_)));
 	}
 
 	#[cfg(feature = "tls")]
 	#[test]
 	fn https_works() {
-		let client = HttpTransportClientBuilder::new().build("https://localhost").unwrap();
+		let client = tokio::runtime::Runtime::new()
+			.unwrap()
+			.block_on(async { HttpTransportClientBuilder::new().build("https://localhost").await.unwrap() });
 		assert_eq!(&client.target, "https://localhost/");
 	}
 
 	#[cfg(not(feature = "tls"))]
 	#[test]
 	fn https_fails_without_tls_feature() {
-		let err = HttpTransportClientBuilder::new().build("https://localhost").unwrap_err();
+		let err = tokio::runtime::Runtime::new()
+			.unwrap()
+			.block_on(async { HttpTransportClientBuilder::new().build("https://localhost").await.unwrap_err() });
 		assert!(matches!(err, Error::Url(_)));
 	}
 
 	#[test]
 	fn faulty_port() {
-		let err = HttpTransportClientBuilder::new().build("http://localhost:-43").unwrap_err();
+		let runtime = tokio::runtime::Runtime::new().unwrap();
+
+		let err = runtime
+			.block_on(async { HttpTransportClientBuilder::new().build("http://localhost:-43").await.unwrap_err() });
 		assert!(matches!(err, Error::Url(_)));
 
-		let err = HttpTransportClientBuilder::new().build("http://localhost:-99999").unwrap_err();
+		let err = runtime
+			.block_on(async { HttpTransportClientBuilder::new().build("http://localhost:-99999").await.unwrap_err() });
 		assert!(matches!(err, Error::Url(_)));
 	}
 
 	#[test]
 	fn url_with_path_works() {
-		let client = HttpTransportClientBuilder::new().build("http://localhost/my-special-path").unwrap();
+		let client = tokio::runtime::Runtime::new().unwrap().block_on(async {
+			HttpTransportClientBuilder::new().build("http://localhost/my-special-path").await.unwrap()
+		});
 		assert_eq!(&client.target, "http://localhost/my-special-path");
 	}
 
 	#[test]
 	fn url_with_query_works() {
-		let client = HttpTransportClientBuilder::new().build("http://127.0.0.1/my?name1=value1&name2=value2").unwrap();
+		let client = tokio::runtime::Runtime::new().unwrap().block_on(async {
+			HttpTransportClientBuilder::new().build("http://127.0.0.1/my?name1=value1&name2=value2").await.unwrap()
+		});
 		assert_eq!(&client.target, "http://127.0.0.1/my?name1=value1&name2=value2");
 	}
 
 	#[test]
 	fn url_with_fragment_is_ignored() {
-		let client = HttpTransportClientBuilder::new().build("http://127.0.0.1/my.htm#ignore").unwrap();
+		let client = tokio::runtime::Runtime::new().unwrap().block_on(async {
+			HttpTransportClientBuilder::new().build("http://127.0.0.1/my.htm#ignore").await.unwrap()
+		});
 		assert_eq!(&client.target, "http://127.0.0.1/my.htm");
 	}
 
 	#[test]
 	fn url_default_port_is_omitted() {
-		let client = HttpTransportClientBuilder::new().build("http://127.0.0.1:80").unwrap();
+		let client = tokio::runtime::Runtime::new()
+			.unwrap()
+			.block_on(async { HttpTransportClientBuilder::new().build("http://127.0.0.1:80").await.unwrap() });
 		assert_eq!(&client.target, "http://127.0.0.1/");
 	}
 
 	#[cfg(feature = "tls")]
 	#[test]
 	fn https_custom_port_works() {
-		let client = HttpTransportClientBuilder::new().build("https://localhost:9999").unwrap();
+		let client = tokio::runtime::Runtime::new()
+			.unwrap()
+			.block_on(async { HttpTransportClientBuilder::new().build("https://localhost:9999").await.unwrap() });
 		assert_eq!(&client.target, "https://localhost:9999/");
 	}
 
 	#[test]
 	fn http_custom_port_works() {
-		let client = HttpTransportClientBuilder::new().build("http://localhost:9999").unwrap();
+		let client = tokio::runtime::Runtime::new()
+			.unwrap()
+			.block_on(async { HttpTransportClientBuilder::new().build("http://localhost:9999").await.unwrap() });
 		assert_eq!(&client.target, "http://localhost:9999/");
 	}
 
@@ -440,6 +630,7 @@ mod tests {
 			.max_request_size(eighty_bytes_limit)
 			.max_response_size(fifty_bytes_limit)
 			.build("http://localhost:9933")
+			.await
 			.unwrap();
 
 		assert_eq!(client.max_request_size, eighty_bytes_limit);

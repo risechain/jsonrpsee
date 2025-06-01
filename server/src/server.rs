@@ -71,6 +71,8 @@ type Notif<'a> = Option<std::borrow::Cow<'a, JsonRawValue>>;
 pub struct Server<HttpMiddleware = Identity, RpcMiddleware = Identity> {
 	listener: TcpListener,
 	server_cfg: ServerConfig,
+	#[cfg(feature = "http3")]
+	http3_server: Option<crate::transport::http3::Http3Server>,
 	rpc_middleware: RpcServiceBuilder<RpcMiddleware>,
 	http_middleware: tower::ServiceBuilder<HttpMiddleware>,
 }
@@ -134,6 +136,58 @@ where
 
 		let (drop_on_completion, mut process_connection_awaiter) = mpsc::channel::<()>(1);
 
+		#[cfg(feature = "http3")]
+		if let Some(http3_server) = self.http3_server {
+			// For HTTP/3, we need to create a service factory that doesn't rely on cloning the middleware
+			let server_cfg = self.server_cfg.clone();
+			let http3_methods = methods.clone();
+
+			// Create a service builder function that creates a new service for each connection
+			let service_builder = move |conn_state: ConnectionState| {
+				let methods = http3_methods.clone();
+				let server_cfg = server_cfg.clone();
+
+				// Create a tower service function that handles the request
+				tower::service_fn(move |req: HttpRequest| {
+					let methods = methods.clone();
+					let server_cfg = server_cfg.clone();
+					let conn_id = conn_state.conn_id;
+
+					async move {
+						// Create a proper RPC service
+						let rpc_service = RpcService::new(
+							methods,
+							server_cfg.max_response_body_size as usize,
+							conn_id.into(),
+							RpcServiceCfg::OnlyCalls,
+						);
+
+						// Use the existing HTTP transport module to handle the request
+						let response = crate::transport::http::call_with_service(
+							req,
+							server_cfg.batch_requests_config,
+							server_cfg.max_request_body_size,
+							rpc_service,
+						)
+						.await;
+
+						Ok::<_, BoxError>(response)
+					}
+				})
+			};
+
+			// Start the HTTP/3 server
+			http3_server
+				.start(
+					service_builder,
+					methods.clone(),
+					self.server_cfg.clone(),
+					connection_guard.clone(),
+					stop_handle.clone(),
+				)
+				.await;
+		}
+
 		loop {
 			match try_accept_conn(&listener, stopped).await {
 				AcceptConnection::Established { socket, remote_addr, stop } => {
@@ -170,7 +224,6 @@ where
 		}
 	}
 }
-
 /// Static server configuration which is shared per connection.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -190,6 +243,13 @@ pub struct ServerConfig {
 	pub(crate) enable_http: bool,
 	/// Enable WS.
 	pub(crate) enable_ws: bool,
+	/// Enable HTTP/3.
+	#[cfg(feature = "http3")]
+	#[allow(dead_code)]
+	pub(crate) enable_http3: bool,
+	/// HTTP/3 configuration.
+	#[cfg(feature = "http3")]
+	pub(crate) http3_config: Option<crate::transport::http3::Http3Config>,
 	/// Number of messages that server is allowed to `buffer` until backpressure kicks in.
 	pub(crate) message_buffer_capacity: u32,
 	/// Ping settings.
@@ -199,7 +259,6 @@ pub struct ServerConfig {
 	/// `TCP_NODELAY` settings.
 	pub(crate) tcp_no_delay: bool,
 }
-
 /// The builder to configure and create a JSON-RPC server configuration.
 #[derive(Debug, Clone)]
 pub struct ServerConfigBuilder {
@@ -219,6 +278,12 @@ pub struct ServerConfigBuilder {
 	enable_http: bool,
 	/// Enable WS.
 	enable_ws: bool,
+	/// Enable HTTP/3.
+	#[cfg(feature = "http3")]
+	enable_http3: bool,
+	/// HTTP/3 configuration.
+	#[cfg(feature = "http3")]
+	pub(crate) http3_config: Option<crate::transport::http3::Http3Config>,
 	/// Number of messages that server is allowed to `buffer` until backpressure kicks in.
 	message_buffer_capacity: u32,
 	/// Ping settings.
@@ -253,6 +318,12 @@ pub enum BatchRequestConfig {
 	Limit(u32),
 	/// The batch request is unlimited.
 	Unlimited,
+}
+
+impl Default for BatchRequestConfig {
+	fn default() -> Self {
+		Self::Limit(100) // TODO: move this to env for configurable batch request limit
+	}
 }
 
 /// Connection related state that is needed
@@ -361,6 +432,10 @@ impl Default for ServerConfigBuilder {
 			tokio_runtime: None,
 			enable_http: true,
 			enable_ws: true,
+			#[cfg(feature = "http3")]
+			enable_http3: false,
+			#[cfg(feature = "http3")]
+			http3_config: Some(crate::transport::http3::Http3Config::default()),
 			message_buffer_capacity: 1024,
 			ping_config: None,
 			id_provider: Arc::new(RandomIntegerIdProvider),
@@ -433,6 +508,72 @@ impl ServerConfigBuilder {
 	pub fn ws_only(mut self) -> Self {
 		self.enable_http = false;
 		self.enable_ws = true;
+		self
+	}
+
+	/// Enable HTTP/3 support for the server.
+	///
+	/// This requires the `http3` feature to be enabled.
+	///
+	/// # Example
+	///
+	/// ```no_run
+	/// use jsonrpsee_server::{ServerBuilder, ServerConfig};
+	///
+	/// #[tokio::main]
+	/// async fn main() {
+	///     let config = ServerConfig::builder()
+	///         .enable_http3()
+	///         .build();
+	///     let server = ServerBuilder::default()
+	///         .set_config(config)
+	///         .build("127.0.0.1:9944")
+	///         .await
+	///         .unwrap();
+	/// }
+	/// ```
+	#[cfg(feature = "http3")]
+	pub fn enable_http3(mut self) -> Self {
+		self.enable_http3 = true;
+		self
+	}
+
+	/// Configure HTTP/3 settings.
+	///
+	/// # Example
+	///
+	/// ```no_run
+	/// use jsonrpsee_server::{ServerBuilder, ServerConfig, transport::http3::{Http3ServerConfig, CertificateConfig}};
+	/// use std::time::Duration;
+	///
+	/// #[tokio::main]
+	/// async fn main() {
+	///     let http3_config = Http3ServerConfig {
+	///         max_connections: 2000,
+	///         max_concurrent_requests_per_connection: 200,
+	///         max_idle_timeout: Duration::from_secs(60),
+	///         enable_0rtt: true,
+	///         cert_config: CertificateConfig::SelfSigned {
+	///             dns_name: "localhost".to_string(),
+	///         },
+	///         ..Default::default()
+	///     };
+	///
+	///     let config = ServerConfig::builder()
+	///         .with_http3_config(http3_config)
+	///         .build();
+	///
+	///     let server = ServerBuilder::default()
+	///         .set_config(config)
+	///         .build("127.0.0.1:9944")
+	///         .await
+	///         .unwrap();
+	/// }
+	/// ```
+	#[cfg(feature = "http3")]
+	pub fn with_http3_config(mut self, config: crate::transport::http3::Http3Config) -> Self {
+		self.enable_http3 = true;
+		self.http3_config = Some(config);
 		self
 	}
 
@@ -531,6 +672,10 @@ impl ServerConfigBuilder {
 			tokio_runtime: self.tokio_runtime,
 			enable_http: self.enable_http,
 			enable_ws: self.enable_ws,
+			#[cfg(feature = "http3")]
+			enable_http3: self.enable_http3,
+			#[cfg(feature = "http3")]
+			http3_config: self.http3_config,
 			message_buffer_capacity: self.message_buffer_capacity,
 			ping_config: self.ping_config,
 			id_provider: self.id_provider,
@@ -842,8 +987,26 @@ impl<HttpMiddleware, RpcMiddleware> Builder<HttpMiddleware, RpcMiddleware> {
 	pub async fn build(self, addrs: impl ToSocketAddrs) -> std::io::Result<Server<HttpMiddleware, RpcMiddleware>> {
 		let listener = TcpListener::bind(addrs).await?;
 
+		#[cfg(feature = "http3")]
+		let http3_server = if self.server_cfg.enable_http3 {
+			let addr = listener.local_addr()?;
+			let http3_config = self.server_cfg.http3_config.clone().unwrap_or_default();
+
+			match crate::transport::http3::Http3Server::new(addr, http3_config).await {
+				Ok(server) => Some(server),
+				Err(e) => {
+					tracing::warn!("Failed to create HTTP/3 server: {}", e);
+					None
+				}
+			}
+		} else {
+			None
+		};
+
 		Ok(Server {
 			listener,
+			#[cfg(feature = "http3")]
+			http3_server,
 			server_cfg: self.server_cfg,
 			rpc_middleware: self.rpc_middleware,
 			http_middleware: self.http_middleware,
@@ -879,8 +1042,19 @@ impl<HttpMiddleware, RpcMiddleware> Builder<HttpMiddleware, RpcMiddleware> {
 	) -> std::io::Result<Server<HttpMiddleware, RpcMiddleware>> {
 		let listener = TcpListener::from_std(listener.into())?;
 
+		#[cfg(feature = "http3")]
+		if self.server_cfg.enable_http3 {
+			tracing::warn!(
+				target: LOG_TARGET,
+				"HTTP/3 is not supported with build_from_tcp() as it requires UDP. \
+				Use build() instead to enable HTTP/3 support."
+			);
+		}
+
 		Ok(Server {
 			listener,
+			#[cfg(feature = "http3")]
+			http3_server: None,
 			server_cfg: self.server_cfg,
 			rpc_middleware: self.rpc_middleware,
 			http_middleware: self.http_middleware,

@@ -77,6 +77,13 @@ impl From<&'static str> for Body {
 
 impl From<Vec<u8>> for Body {
 	fn from(bytes: Vec<u8>) -> Self {
+		let body = http_body_util::Full::from(Bytes::from(bytes));
+		Self::new(body)
+	}
+}
+
+impl From<Bytes> for Body {
+	fn from(bytes: Bytes) -> Self {
 		let body = http_body_util::Full::from(bytes);
 		Self::new(body)
 	}
@@ -124,7 +131,7 @@ pub enum HttpError {
 /// Returns `Ok((bytes, single))` if the body was in valid size range; and a bool indicating whether the JSON-RPC
 /// request is a single or a batch.
 /// Returns `Err` if the body was too large or the body couldn't be read.
-pub async fn read_body<B>(headers: &http::HeaderMap, body: B, max_body_size: u32) -> Result<(Vec<u8>, bool), HttpError>
+pub async fn read_body<B>(headers: &http::HeaderMap, body: B, max_body_size: u32) -> Result<(Bytes, bool), HttpError>
 where
 	B: http_body::Body<Data = Bytes> + Send + 'static,
 	B::Data: Send,
@@ -141,7 +148,7 @@ where
 	futures_util::pin_mut!(body);
 
 	// Allocate up to 16KB initially.
-	let mut received_data = Vec::with_capacity(std::cmp::min(body_size as usize, 16 * 1024));
+	let mut received_data = bytes::BytesMut::with_capacity(std::cmp::min(body_size as usize, 16 * 1024));
 	let mut limited_body = Limited::new(body, max_body_size as usize);
 
 	let mut is_single = None;
@@ -183,7 +190,7 @@ where
 				"HTTP body: {}",
 				std::str::from_utf8(&received_data).unwrap_or("Invalid UTF-8 data")
 			);
-			Ok((received_data, single))
+			Ok((received_data.freeze(), single))
 		}
 		_ => Err(HttpError::Malformed),
 	}
@@ -221,16 +228,29 @@ pub fn read_header_values<'a>(
 #[cfg(test)]
 mod tests {
 	use super::{read_body, read_header_content_length, HttpError};
+	use bytes::Bytes;
 	use http_body_util::BodyExt;
 
-	type Body = http_body_util::Full<bytes::Bytes>;
+	type Body = http_body_util::Full<Bytes>;
 
 	#[tokio::test]
 	async fn body_to_bytes_size_limit_works() {
 		let headers = http::header::HeaderMap::new();
-		let full_body = Body::from(vec![0; 128]);
+		let full_body = Body::from(Bytes::from(vec![0; 128]));
 		let body = full_body.map_err(|e| HttpError::Stream(e.into()));
 		assert!(read_body(&headers, body, 127).await.is_err());
+	}
+
+	#[tokio::test]
+	async fn body_to_bytes_zero_copy_works() {
+		let headers = http::header::HeaderMap::new();
+		let test_data = r#"{"jsonrpc":"2.0","method":"test","params":[],"id":1}"#;
+		let full_body = Body::from(Bytes::from(test_data.as_bytes().to_vec()));
+		let body = full_body.map_err(|e| HttpError::Stream(e.into()));
+		
+		let (bytes, is_single) = read_body(&headers, body, 1024).await.unwrap();
+		assert!(is_single);
+		assert_eq!(bytes, Bytes::from(test_data.as_bytes().to_vec()));
 	}
 
 	#[test]

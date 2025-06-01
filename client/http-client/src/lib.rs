@@ -38,6 +38,18 @@
 mod client;
 mod rpc_service;
 
+#[cfg(feature = "http3")]
+/// HTTP/3 transport.
+pub mod http3;
+#[cfg(feature = "http3")]
+pub use self::http3::{CertificateVerificationMode, Http3Client, Http3Config, WorkloadProfile};
+
+#[cfg(feature = "http3")]
+use {futures as _, h3 as _, h3_quinn as _, http as _, quinn as _, quinn_proto as _};
+
+use futures as _;
+use http as _;
+
 /// HTTP transport.
 pub mod transport;
 

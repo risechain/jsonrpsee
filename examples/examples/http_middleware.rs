@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
 	// HTTP.
 	{
-		let client = HttpClient::builder().build(format!("http://{}", addr))?;
+		let client = HttpClient::builder().build(format!("http://{}", addr)).await?;
 		let response: String = client.request("say_hello", rpc_params![]).await?;
 		println!("[main]: http response: {:?}", response);
 		let _response: Result<String, _> = client.request("unknown_method", rpc_params![]).await;

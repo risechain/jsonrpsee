@@ -4,10 +4,14 @@ use std::time::Duration;
 use criterion::*;
 use futures_util::future::{FutureExt, join_all};
 use futures_util::stream::FuturesUnordered;
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+use helpers::fixed_client::http3_client;
 use helpers::fixed_client::{
 	ArrayParams, BatchRequestBuilder, ClientT, HeaderMap, SubscriptionClientT, http_client, rpc_params, ws_client,
 	ws_handshake,
 };
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+use helpers::http3_server;
 use helpers::{KIB, SUB_METHOD_NAME, UNSUB_METHOD_NAME};
 use jsonrpsee::types::{Id, Request};
 use pprof::criterion::{Output, PProfProfiler};
@@ -32,41 +36,123 @@ criterion_group!(
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
 	targets = jsonrpsee_types_v2
 );
+#[cfg(not(feature = "http3"))]
 criterion_group!(
 	name = sync_benches;
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
 	targets = SyncBencher::http_benches, SyncBencher::websocket_benches
 );
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+criterion_group!(
+	name = sync_benches;
+	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+	targets = SyncBencher::http_benches, SyncBencher::websocket_benches, SyncBencher::http3_benches
+);
+
+#[cfg(not(feature = "http3"))]
 criterion_group!(
 	name = sync_benches_mid;
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_mid());
 	targets = SyncBencher::http_benches_mid, SyncBencher::websocket_benches_mid
 );
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+criterion_group!(
+	name = sync_benches_mid;
+	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_mid());
+	targets = SyncBencher::http_benches_mid, SyncBencher::websocket_benches_mid, SyncBencher::http3_benches_mid
+);
+
+#[cfg(not(feature = "http3"))]
 criterion_group!(
 	name = sync_benches_slow;
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_time_slow());
 	targets = SyncBencher::http_benches_slow, SyncBencher::websocket_benches_slow
 );
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+criterion_group!(
+	name = sync_benches_slow;
+	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_time_slow());
+	targets = SyncBencher::http_benches_slow, SyncBencher::websocket_benches_slow, SyncBencher::http3_benches_slow
+);
+
+#[cfg(not(feature = "http3"))]
 criterion_group!(
 	name = async_benches;
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
 	targets = AsyncBencher::http_benches, AsyncBencher::websocket_benches
 );
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+criterion_group!(
+	name = async_benches;
+	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+	targets = AsyncBencher::http_benches, AsyncBencher::websocket_benches, AsyncBencher::http3_benches
+);
+
+#[cfg(not(feature = "http3"))]
 criterion_group!(
 	name = async_benches_mid;
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_mid());
 	targets = AsyncBencher::http_benches_mid, AsyncBencher::websocket_benches_mid
 );
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+criterion_group!(
+	name = async_benches_mid;
+	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_mid());
+	targets = AsyncBencher::http_benches_mid, AsyncBencher::websocket_benches_mid, AsyncBencher::http3_benches_mid
+);
+
+#[cfg(not(feature = "http3"))]
 criterion_group!(
 	name = async_slow_benches;
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_time_slow());
 	targets = AsyncBencher::http_benches_slow, AsyncBencher::websocket_benches_slow
+);
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+criterion_group!(
+	name = async_slow_benches;
+	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None))).measurement_time(measurement_time_slow());
+	targets = AsyncBencher::http_benches_slow, AsyncBencher::websocket_benches_slow, AsyncBencher::http3_benches_slow
 );
 criterion_group!(
 	name = subscriptions;
 	config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
 	targets = AsyncBencher::subscriptions
 );
+
+#[cfg(not(feature = "http3"))]
+criterion_main!(
+	types_benches,
+	sync_benches,
+	sync_benches_mid,
+	sync_benches_slow,
+	async_benches,
+	async_benches_mid,
+	async_slow_benches,
+	subscriptions
+);
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+criterion_main!(
+	types_benches,
+	sync_benches,
+	sync_benches_mid,
+	sync_benches_slow,
+	async_benches,
+	async_benches_mid,
+	async_slow_benches,
+	subscriptions
+);
+
+#[cfg(all(feature = "jsonrpc-crate", feature = "http3"))]
+criterion_main!(types_benches, subscriptions);
+
+#[cfg(all(not(feature = "http3"), not(feature = "jsonrpc-crate")))]
 criterion_main!(
 	types_benches,
 	sync_benches,
@@ -182,6 +268,38 @@ trait RequestBencher {
 			crit,
 			&url,
 			"http_concurrent_conn_calls",
+			Self::REQUEST_TYPE,
+			&[128, 256, 512, 1024],
+		);
+	}
+
+	#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+	fn http3_benches(crit: &mut Criterion) {
+		let rt = TokioRuntime::new().unwrap();
+		let (url, _server) = rt.block_on(http3_server(rt.handle().clone()));
+		let client = Arc::new(rt.block_on(http3_client(&url, HeaderMap::new())));
+		http3_custom_headers_round_trip(&rt, crit, &url, "http3_custom_headers_round_trip", Self::REQUEST_TYPE);
+		http3_concurrent_conn_calls(&rt, crit, &url, "http3_concurrent_conn_calls", Self::REQUEST_TYPE, &[2, 4, 8]);
+		round_trip(&rt, crit, client.clone(), "http3_round_trip", Self::REQUEST_TYPE);
+		batch_round_trip(&rt, crit, client, "http3_batch_requests", Self::REQUEST_TYPE);
+	}
+
+	#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+	fn http3_benches_mid(crit: &mut Criterion) {
+		let rt = TokioRuntime::new().unwrap();
+		let (url, _server) = rt.block_on(http3_server(rt.handle().clone()));
+		http3_concurrent_conn_calls(&rt, crit, &url, "http3_concurrent_conn_calls", Self::REQUEST_TYPE, &[16, 32, 64]);
+	}
+
+	#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+	fn http3_benches_slow(crit: &mut Criterion) {
+		let rt = TokioRuntime::new().unwrap();
+		let (url, _server) = rt.block_on(http3_server(rt.handle().clone()));
+		http3_concurrent_conn_calls(
+			&rt,
+			crit,
+			&url,
+			"http3_concurrent_conn_calls",
 			Self::REQUEST_TYPE,
 			&[128, 256, 512, 1024],
 		);
@@ -522,4 +640,77 @@ fn ws_custom_headers_handshake(rt: &TokioRuntime, crit: &mut Criterion, url: &st
 		});
 	}
 	group.finish();
+}
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+fn http3_concurrent_conn_calls(
+	rt: &TokioRuntime,
+	crit: &mut Criterion,
+	url: &str,
+	name: &str,
+	request: RequestType,
+	concurrent_conns: &[usize],
+) {
+	let fast_call = request.methods()[0];
+	assert!(fast_call.starts_with("fast_call"));
+
+	let bench_name = format!("{}/{}", name, fast_call);
+	let mut group = crit.benchmark_group(request.group_name(&bench_name));
+	for conns in concurrent_conns.iter() {
+		group.bench_function(format!("{}", conns), |b| {
+			b.to_async(rt).iter_with_setup(
+				|| {
+					let mut clients = Vec::new();
+					// We have to use `block_in_place` here since `b.to_async(rt)` automatically enters the
+					// runtime context and simply calling `block_on` here will cause the code to panic.
+					tokio::task::block_in_place(|| {
+						tokio::runtime::Handle::current().block_on(async {
+							for _ in 0..*conns {
+								clients.push(http3_client(url, HeaderMap::new()).await);
+							}
+						})
+					});
+
+					clients
+				},
+				|clients| async {
+					let tasks = clients.into_iter().map(|client| {
+						rt.spawn(async move {
+							client.request::<String, ArrayParams>(fast_call, rpc_params![]).await.unwrap();
+						})
+					});
+					join_all(tasks).await;
+				},
+			)
+		});
+	}
+	group.finish();
+}
+
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+fn http3_custom_headers_round_trip(
+	rt: &TokioRuntime,
+	crit: &mut Criterion,
+	url: &str,
+	name: &str,
+	request: RequestType,
+) {
+	let fast_call = request.methods()[0];
+	assert!(fast_call.starts_with("fast_call"));
+
+	for header_size in [0, KIB, 5 * KIB, 25 * KIB, 100 * KIB] {
+		let mut headers = HeaderMap::new();
+		if header_size != 0 {
+			headers.insert("key", "A".repeat(header_size).parse().unwrap());
+		}
+
+		let client = Arc::new(rt.block_on(http3_client(url, headers)));
+		let bench_name = format!("{}/{}kb", name, header_size / KIB);
+
+		crit.bench_function(&request.group_name(&bench_name), |b| {
+			b.to_async(rt).iter(|| async {
+				black_box(client.request::<String, ArrayParams>(fast_call, rpc_params![]).await.unwrap());
+			})
+		});
+	}
 }
