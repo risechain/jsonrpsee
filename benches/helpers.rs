@@ -1,3 +1,5 @@
+#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
+use jsonrpsee::server::http3::{CertificateConfig, Http3Config};
 use std::time::Duration;
 
 pub(crate) const SYNC_FAST_CALL: &str = "fast_call";
@@ -196,12 +198,26 @@ fn gen_rpc_module() -> jsonrpsee::RpcModule<()> {
 pub async fn http3_server(handle: tokio::runtime::Handle) -> (String, jsonrpsee::server::ServerHandle) {
 	use jsonrpsee::server::{ServerBuilder, ServerConfig};
 
+	let http3_config = Http3Config {
+		max_connections: 1000,
+		max_concurrent_requests_per_connection: 100,
+		max_idle_timeout: std::time::Duration::from_secs(30),
+		keep_alive_interval: Some(std::time::Duration::from_secs(5)),
+		enable_0rtt: true,
+		max_bidi_streams: 100,
+		max_uni_streams: 100,
+		initial_congestion_window: 14720,
+		enable_bbr: true,
+		cert_config: CertificateConfig::SelfSigned { dns_name: "localhost".to_string() },
+	};
+
 	let config = ServerConfig::builder()
 		.max_request_body_size(u32::MAX)
 		.max_response_body_size(u32::MAX)
 		.max_connections(10 * 1024)
 		.custom_tokio_runtime(handle)
 		.enable_http3()
+		.with_http3_config(http3_config)
 		.build();
 
 	println!("HTTP/3 enabled: {:?}", config);
@@ -212,7 +228,7 @@ pub async fn http3_server(handle: tokio::runtime::Handle) -> (String, jsonrpsee:
 
 	let addr = server.local_addr().unwrap();
 	let handle = server.start(module);
-	(format!("http://{}", addr), handle)
+	(format!("http3://{}", addr), handle)
 }
 
 pub mod fixed_client {
@@ -236,22 +252,28 @@ pub mod fixed_client {
 	}
 
 	#[cfg(all(not(feature = "jsonrpc-crate"), feature = "http3"))]
-	pub(crate) async fn http3_client(url: &str, headers: HeaderMap) -> jsonrpsee_v0_20_http_client::HttpClient {
+	pub(crate) async fn http3_client(
+		url: &str,
+		headers: HeaderMap,
+	) -> Result<jsonrpsee_v0_20_http_client::HttpClient, Box<dyn std::error::Error>> {
 		use jsonrpsee_v0_20_http_client::HttpClientBuilder;
 
 		// For benchmarks, we're using the v0.20 client with simulated HTTP/3 support
+		// criterion's benchmarking env might restrict UDP traffic needed for HTTP/3!
 		let url = url.replace("http3://", "http://");
 
 		let mut http3_headers = headers.clone();
+		// simulate HTTP/3 behaviors
 		http3_headers.insert("x-simulated-http3", "true".parse().unwrap());
+		http3_headers.insert("x-accept-self-signed", "true".parse().unwrap());
 
-		HttpClientBuilder::default()
+		let client = HttpClientBuilder::default()
 			.max_request_size(u32::MAX)
 			.max_response_size(u32::MAX)
 			.max_concurrent_requests(1024 * 1024)
 			.set_headers(http3_headers)
-			.build(&url)
-			.unwrap()
+			.build(&url)?;
+		Ok(client)
 	}
 
 	pub(crate) async fn ws_client(url: &str) -> WsClient {

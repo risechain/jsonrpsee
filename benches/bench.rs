@@ -277,7 +277,20 @@ trait RequestBencher {
 	fn http3_benches(crit: &mut Criterion) {
 		let rt = TokioRuntime::new().unwrap();
 		let (url, _server) = rt.block_on(http3_server(rt.handle().clone()));
-		let client = Arc::new(rt.block_on(http3_client(&url, HeaderMap::new())));
+		let client = rt.block_on(async {
+			let mut retries = 3;
+			while retries > 0 {
+				match http3_client(&url, HeaderMap::new()).await {
+					Ok(client) => return Arc::new(client),
+					Err(e) => {
+						eprintln!("HTTP/3 client creation failed, retrying: {}", e);
+						retries -= 1;
+						tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+					}
+				}
+			}
+			panic!("Failed to create HTTP/3 client after retries");
+		});
 		http3_custom_headers_round_trip(&rt, crit, &url, "http3_custom_headers_round_trip", Self::REQUEST_TYPE);
 		http3_concurrent_conn_calls(&rt, crit, &url, "http3_concurrent_conn_calls", Self::REQUEST_TYPE, &[2, 4, 8]);
 		round_trip(&rt, crit, client.clone(), "http3_round_trip", Self::REQUEST_TYPE);
@@ -666,7 +679,24 @@ fn http3_concurrent_conn_calls(
 					tokio::task::block_in_place(|| {
 						tokio::runtime::Handle::current().block_on(async {
 							for _ in 0..*conns {
-								clients.push(http3_client(url, HeaderMap::new()).await);
+								let mut retries = 3;
+								while retries > 0 {
+									match http3_client(url, HeaderMap::new()).await {
+										Ok(client) => {
+											clients.push(client);
+											break;
+										}
+										Err(e) => {
+											eprintln!("HTTP/3 client creation failed, retrying: {}", e);
+											retries -= 1;
+											tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+										}
+									}
+								}
+
+								if retries == 0 {
+									eprintln!("Failed to create HTTP/3 client after retries");
+								}
 							}
 						})
 					});
@@ -704,7 +734,22 @@ fn http3_custom_headers_round_trip(
 			headers.insert("key", "A".repeat(header_size).parse().unwrap());
 		}
 
-		let client = Arc::new(rt.block_on(http3_client(url, headers)));
+		// Add retry logic for HTTP/3 client creation
+		let client: Arc<jsonrpsee_v0_20_http_client::HttpClient> = rt.block_on(async {
+			let mut retries = 3;
+			while retries > 0 {
+				match http3_client(url, headers.clone()).await {
+					Ok(client) => return Arc::new(client),
+					Err(e) => {
+						eprintln!("HTTP/3 client creation failed, retrying: {}", e);
+						retries -= 1;
+						tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+					}
+				}
+			}
+			panic!("Failed to create HTTP/3 client after retries");
+		});
+
 		let bench_name = format!("{}/{}kb", name, header_size / KIB);
 
 		crit.bench_function(&request.group_name(&bench_name), |b| {

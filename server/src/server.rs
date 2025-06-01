@@ -142,19 +142,16 @@ where
 			let server_cfg = self.server_cfg.clone();
 			let http3_methods = methods.clone();
 
-			// Create a service builder function that creates a new service for each connection
 			let service_builder = move |conn_state: ConnectionState| {
 				let methods = http3_methods.clone();
 				let server_cfg = server_cfg.clone();
 
-				// Create a tower service function that handles the request
 				tower::service_fn(move |req: HttpRequest| {
 					let methods = methods.clone();
 					let server_cfg = server_cfg.clone();
 					let conn_id = conn_state.conn_id;
 
 					async move {
-						// Create a proper RPC service
 						let rpc_service = RpcService::new(
 							methods,
 							server_cfg.max_response_body_size as usize,
@@ -162,7 +159,6 @@ where
 							RpcServiceCfg::OnlyCalls,
 						);
 
-						// Use the existing HTTP transport module to handle the request
 						let response = crate::transport::http::call_with_service(
 							req,
 							server_cfg.batch_requests_config,
@@ -176,7 +172,6 @@ where
 				})
 			};
 
-			// Start the HTTP/3 server
 			http3_server
 				.start(
 					service_builder,
@@ -224,6 +219,7 @@ where
 		}
 	}
 }
+
 /// Static server configuration which is shared per connection.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -245,7 +241,6 @@ pub struct ServerConfig {
 	pub(crate) enable_ws: bool,
 	/// Enable HTTP/3.
 	#[cfg(feature = "http3")]
-	#[allow(dead_code)]
 	pub(crate) enable_http3: bool,
 	/// HTTP/3 configuration.
 	#[cfg(feature = "http3")]
