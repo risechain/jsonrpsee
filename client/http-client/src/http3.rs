@@ -576,120 +576,119 @@ impl Http3Client {
 		let key = format!("{}:{}", host, port);
 
 		{
-			let mut connections = self.connections.lock().await;
-
-			connections.retain(|_, entry| {
-				let is_valid = entry.connection.close_reason().is_none()
-					&& entry.last_used.elapsed() < self.config.connection_idle_timeout;
-
-				if is_valid {
-					let stats = entry.connection.stats();
-					entry.health_metrics.update_from_stats(&stats);
-
-					if let Some(rtt) = entry.health_metrics.avg_rtt {
-						if rtt > Duration::from_millis(200) {
-							entry.health_score *= 0.9;
-						}
-					}
-
-					if entry.health_metrics.packet_loss_rate > 0.05 {
-						entry.health_score *= 1.0 - entry.health_metrics.packet_loss_rate;
-					}
-
-					if entry.health_metrics.throughput_bps > 1_000_000 && entry.health_score < 10.0 {
-						entry.health_score += 0.2;
-					}
-
-					// Gradually improve score for stable connections
-					if entry.request_count > 0 && entry.health_score < 10.0 {
-						entry.health_score += 0.1;
-					}
-
-					entry.health_score =
-						entry.health_score * 0.8 + entry.health_metrics.connection_stability_score * 2.0 * 0.2;
-				} else {
-					debug!("Removing stale connection from pool");
-				}
-
-				is_valid
-			});
-
-			if let Some(entry) = connections.get_mut(&key) {
-				if entry.health_score >= 5.0 {
+			let connections = self.connections.lock().await;
+			if let Some(entry) = connections.get(&key) {
+				if entry.connection.close_reason().is_none()
+					&& entry.last_used.elapsed() < self.config.connection_idle_timeout
+					&& entry.health_score >= 5.0
+				{
 					trace!("Reusing existing connection with health score {}", entry.health_score);
-					entry.last_used = std::time::Instant::now();
-					entry.request_count += 1;
 					return Ok(entry.connection.clone());
-				} else {
-					debug!(
-						"Existing connection has poor health score ({}), creating new connection",
-						entry.health_score
-					);
-				}
-			}
-
-			let host_connections = connections.iter().filter(|(k, _)| k.starts_with(&format!("{}:", host))).count();
-
-			if host_connections >= self.config.max_connections_per_host {
-				let worst_key = connections
-					.iter()
-					.filter(|(k, _)| k.starts_with(&format!("{}:", host)))
-					.min_by(|(_, a), (_, b)| {
-						a.health_score.partial_cmp(&b.health_score).unwrap_or(std::cmp::Ordering::Equal)
-					})
-					.map(|(k, _)| k.clone());
-
-				if let Some(key) = worst_key {
-					connections.remove(&key);
-					debug!("Removed least healthy connection to maintain max connections per host limit");
 				}
 			}
 		}
-
-		let server_name = host.to_string();
-		let addr = format!("{}:{}", host, port).parse().map_err(|e| Error::Url(format!("Invalid address: {}", e)))?;
-
-		debug!("Creating new HTTP/3 connection to {}", addr);
-
-		let mut transport_config = TransportConfig::default();
-
-		transport_config.max_concurrent_bidi_streams(VarInt::from_u32(
-			self.config.max_concurrent_requests as u32 * self.config.max_concurrent_streams_multiplier,
-		));
-		transport_config.max_concurrent_uni_streams(VarInt::from_u32(
-			self.config.max_concurrent_requests as u32 * self.config.max_concurrent_streams_multiplier,
-		));
-
-		transport_config.receive_window(VarInt::from_u32(self.config.receive_window_size));
-		transport_config.send_window(VarInt::from_u32(self.config.send_buffer_size).into());
-
-		transport_config.initial_rtt(Duration::from_millis(self.config.initial_rtt_ms as u64));
-
-		if self.config.enable_bbr_congestion_control {
-			transport_config
-				.congestion_controller_factory(std::sync::Arc::new(quinn::congestion::BbrConfig::default()));
-		}
-
-		let mut client_config = self.client_config.as_ref().clone();
-		client_config.transport_config(Arc::new(transport_config));
-
-		let mut endpoint = self.endpoint.as_ref().clone();
-		endpoint.set_default_client_config(client_config);
-
-		let connecting = self
-			.endpoint
-			.connect(addr, &server_name)
-			.map_err(|e| Error::Http(HttpError::Stream(Box::new(std::io::Error::other(format!("{}", e))))))?;
-
-		let connection = connecting
-			.await
-			.map_err(|e| Error::Http(HttpError::Stream(Box::new(std::io::Error::other(format!("{}", e))))))?;
-
-		let stats = connection.stats();
-		let initial_rtt = stats.path.rtt;
 
 		{
 			let mut connections = self.connections.lock().await;
+
+			// Check again in case another thread created a connection while we were waiting
+			if let Some(entry) = connections.get_mut(&key) {
+				if entry.connection.close_reason().is_none()
+					&& entry.last_used.elapsed() < self.config.connection_idle_timeout
+				{
+					// Only update health metrics occasionally to reduce overhead
+					if entry.request_count % 10 == 0 {
+						let stats = entry.connection.stats();
+						entry.health_metrics.update_from_stats(&stats);
+
+						// Simplified health score calculation
+						entry.health_score = 8.0 + entry.health_metrics.connection_stability_score * 2.0;
+					}
+
+					if entry.health_score >= 5.0 {
+						entry.last_used = std::time::Instant::now();
+						entry.request_count += 1;
+						return Ok(entry.connection.clone());
+					} else {
+						debug!(
+							"Existing connection has poor health score ({}), creating new connection",
+							entry.health_score
+						);
+					}
+				}
+			}
+
+			// Clean up stale connections
+			connections.retain(|_, entry| {
+				entry.connection.close_reason().is_none()
+					&& entry.last_used.elapsed() < self.config.connection_idle_timeout
+			});
+
+			// Check connection limit
+			let host_connections = connections.iter().filter(|(k, _)| k.starts_with(&format!("{}:", host))).count();
+
+			if host_connections >= self.config.max_connections_per_host {
+				// Find the best existing connection instead of creating a new one
+				let best_entry = connections.iter().filter(|(k, _)| k.starts_with(&format!("{}:", host))).max_by(
+					|(_, a), (_, b)| a.health_score.partial_cmp(&b.health_score).unwrap_or(std::cmp::Ordering::Equal),
+				);
+
+				if let Some((_, entry)) = best_entry {
+					debug!(
+						"Reusing best existing connection (score: {}) to stay within connection limit",
+						entry.health_score
+					);
+					return Ok(entry.connection.clone());
+				}
+			}
+
+			// Create new connection
+			debug!("Creating new HTTP/3 connection to {}:{}", host, port);
+
+			let server_name = host.to_string();
+			let addr =
+				format!("{}:{}", host, port).parse().map_err(|e| Error::Url(format!("Invalid address: {}", e)))?;
+
+			// Optimize transport config for the specific use case
+			let mut transport_config = TransportConfig::default();
+			transport_config.max_concurrent_bidi_streams(VarInt::from_u32(
+				self.config.max_concurrent_requests as u32 * self.config.max_concurrent_streams_multiplier,
+			));
+			transport_config.max_concurrent_uni_streams(VarInt::from_u32(
+				self.config.max_concurrent_requests as u32 * self.config.max_concurrent_streams_multiplier,
+			));
+			transport_config.receive_window(VarInt::from_u32(self.config.receive_window_size));
+			transport_config.send_window(VarInt::from_u32(self.config.send_buffer_size).into());
+			transport_config.initial_rtt(Duration::from_millis(self.config.initial_rtt_ms as u64));
+
+			if self.config.enable_bbr_congestion_control {
+				transport_config
+					.congestion_controller_factory(std::sync::Arc::new(quinn::congestion::BbrConfig::default()));
+			}
+
+			let mut client_config = self.client_config.as_ref().clone();
+			client_config.transport_config(Arc::new(transport_config));
+
+			let mut endpoint = self.endpoint.as_ref().clone();
+			endpoint.set_default_client_config(client_config);
+
+			// Connect with timeout to avoid hanging
+			let connecting = self
+				.endpoint
+				.connect(addr, &server_name)
+				.map_err(|e| Error::Http(HttpError::Stream(Box::new(std::io::Error::other(format!("{}", e))))))?;
+
+			let connection = match tokio::time::timeout(Duration::from_secs(5), connecting).await {
+				Ok(Ok(conn)) => conn,
+				Ok(Err(e)) => {
+					return Err(Error::Http(HttpError::Stream(Box::new(std::io::Error::other(format!("{}", e))))));
+				}
+				Err(_) => return Err(Error::RequestTimeout),
+			};
+
+			let stats = connection.stats();
+			let initial_rtt = stats.path.rtt;
+
 			let mut health_metrics = ConnectionHealthMetrics::new();
 			health_metrics.update_rtt(initial_rtt);
 
@@ -707,9 +706,9 @@ impl Http3Client {
 			);
 
 			info!("Added new HTTP/3 connection to pool with initial RTT: {:?}", initial_rtt);
-		}
 
-		Ok(connection)
+			Ok(connection)
+		}
 	}
 }
 
@@ -772,7 +771,7 @@ impl Service<HttpRequest<Body>> for Http3Client {
 			let mut request = Request::builder().uri(parts.uri).method(parts.method);
 
 			if enable_optimizations {
-				request = request.header("x-http3-optimized", "true");
+				request = request.header("x-http3-optimized", "true").header("connection", "keep-alive");
 			}
 
 			for (name, value) in parts.headers.iter() {

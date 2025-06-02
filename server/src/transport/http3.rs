@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Buf, Bytes};
-// use futures_util::StreamExt;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use h3::server::{Connection, RequestStream};
 use h3_quinn::{Connection as H3Connection, quinn};
 use http::{Request, Response, StatusCode};
-// use http_body_util::Full;
 use jsonrpsee_core::BoxError;
 use jsonrpsee_core::server::Methods;
 use quinn::crypto::rustls::QuicServerConfig;
@@ -247,54 +247,71 @@ where
 	Svc::Future: Send + 'static,
 {
 	let h3_conn = H3Connection::new(connection);
-
 	let mut h3: Connection<_, Bytes> = h3::server::Connection::new(h3_conn).await?;
 
-	trace!(target: LOG_TARGET, "HTTP/3 connection established");
+	// Use a local semaphore for this connection to limit concurrent streams
+	let connection_semaphore = Arc::new(Semaphore::new(server_cfg.max_request_body_size.min(100) as usize));
 
-	let stopped = stop_handle.clone().shutdown();
-	tokio::pin!(stopped);
+	// Process multiple requests concurrently but with controlled concurrency
+	let mut futures = FuturesUnordered::new();
 
 	loop {
-		let request_stream = tokio::select! {
+		tokio::select! {
 			result = h3.accept() => {
 				match result {
-					Ok(Some(req)) => req,
+					Ok(Some(req_stream)) => {
+						// Try to acquire a permit from both semaphores
+						let conn_permit = match connection_semaphore.clone().try_acquire_owned() {
+							Ok(p) => p,
+							Err(_) => {
+								// Too many requests on this connection, reject
+								continue;
+							}
+						};
+
+						let global_permit = match max_concurrent_requests.clone().try_acquire_owned() {
+							Ok(p) => p,
+							Err(_) => {
+								// Too many global requests, reject
+								continue;
+							}
+						};
+
+						let service = service.clone();
+						let methods = methods.clone();
+						let server_cfg = server_cfg.clone();
+						let conn_state = conn_state.clone();
+
+						// Add to our set of futures to process
+						futures.push(async move {
+							let _conn_permit = conn_permit;
+							let _global_permit = global_permit;
+
+							if let Ok((request, stream)) = req_stream.resolve_request().await {
+								if let Err(e) = handle_request(
+									request, stream, service, methods, server_cfg, conn_state
+								).await {
+									error!("Error handling HTTP/3 request: {}", e);
+								}
+							}
+						});
+					}
 					Ok(None) => break,
 					Err(e) => {
-						debug!(target: LOG_TARGET, "Error accepting HTTP/3 request: {}", e);
+						debug!("Error accepting HTTP/3 request: {}", e);
 						break;
 					}
 				}
 			}
-			_ = &mut stopped => break,
-		};
-
-		let permit = match max_concurrent_requests.clone().try_acquire_owned() {
-			Ok(p) => p,
-			Err(_) => {
-				debug!(target: LOG_TARGET, "Max concurrent requests reached");
-				// We need to properly reject this request
-				continue;
+			Some(_) = futures.next(), if !futures.is_empty() => {
+				// A request has completed, continue
 			}
-		};
-
-		let service = service.clone();
-		let methods = methods.clone();
-		let server_cfg = server_cfg.clone();
-		let conn_state = conn_state.clone();
-
-		tokio::spawn(async move {
-			let _permit = permit; // Keep permit alive for the duration
-
-			// Get the request from the resolver
-			if let Ok((request, stream)) = request_stream.resolve_request().await {
-				if let Err(e) = handle_request(request, stream, service, methods, server_cfg, conn_state).await {
-					error!(target: LOG_TARGET, "Error handling HTTP/3 request: {}", e);
-				}
-			}
-		});
+			_ = stop_handle.clone().shutdown() => break,
+		}
 	}
+
+	// Wait for remaining requests to complete
+	while let Some(_) = futures.next().await {}
 
 	Ok(())
 }
