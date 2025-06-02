@@ -35,7 +35,7 @@ HTTP/3 uses the QUIC protocol which runs over UDP. When benchmarking HTTP/3:
 For more reliable HTTP/3 benchmarks, consider using the dedicated script:
 
 ```sh
-./scripts/benchmark_http.sh
+./scripts/bench_http.sh
 ```
 
 ## Run all benchmarks

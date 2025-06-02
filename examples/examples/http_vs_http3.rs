@@ -4,10 +4,15 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use jsonrpsee::core::client::ClientT;
-use jsonrpsee::http_client::{CertificateVerificationMode, HttpClientBuilder};
+use jsonrpsee::http_client::HttpClientBuilder;
 use jsonrpsee::rpc_params;
-use jsonrpsee::server::{RpcModule, ServerBuilder, ServerConfig};
+use jsonrpsee::server::{RpcModule, ServerBuilder};
 use jsonrpsee::types::ErrorObjectOwned;
+
+#[cfg(feature = "http3")]
+use jsonrpsee::http_client::CertificateVerificationMode;
+#[cfg(feature = "http3")]
+use jsonrpsee::server::ServerConfig;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
