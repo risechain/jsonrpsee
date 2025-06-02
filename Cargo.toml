@@ -49,11 +49,16 @@ futures-channel = { version = "0.3.14", default-features = false }
 futures-timer = "3"
 futures-util = { version = "0.3.14", default-features = false }
 gloo-net = { version = "0.6.0", default-features = false }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
 heck = "0.5.0"
+quinn = "0.11"
+rcgen = "0.13"
 http = "1"
 http-body = "1"
 http-body-util = "0.1.0"
 hyper = "1.5"
+quinn-proto = "0.11.0"
 hyper-rustls = { version = "0.27", default-features = false }
 hyper-util = "0.1"
 parking_lot = "0.12"
@@ -65,6 +70,7 @@ rand = "0.9"
 route-recognizer = "0.3.1"
 rustc-hash = "2"
 rustls = { version = "0.23", default-features = false }
+rustls-pemfile = "2.2"
 rustls-pki-types = "1"
 rustls-platform-verifier = "0.5"
 serde = { version = "1", default-features = false, features = ["derive"] }
@@ -84,6 +90,7 @@ wasm-bindgen-futures = "0.4.19"
 
 # Dev dependencies
 anyhow = "1"
+clap = { version = "4.4", features = ["derive"] }
 console-subscriber = "0.4"
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 fast-socks5 = "0.10"

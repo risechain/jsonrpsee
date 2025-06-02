@@ -59,6 +59,12 @@ impl StopHandle {
 	pub async fn shutdown(mut self) {
 		let _ = self.0.changed().await;
 	}
+
+	/// Check if the server has been stopped.
+	pub fn is_stopped(&self) -> bool {
+		// The receiver has changed from its initial state when stop is called
+		self.0.has_changed().unwrap_or(true)
+	}
 }
 
 /// Error when the server has already been stopped.

@@ -24,12 +24,27 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+// #![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # jsonrpsee-server
 //!
 //! `jsonrpsee-server` is a [JSON RPC](https://www.jsonrpc.org/specification) server that supports both HTTP and WebSocket transport.
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#[cfg(feature = "http3")]
+use h3 as _;
+#[cfg(feature = "http3")]
+use h3_quinn as _;
+#[cfg(feature = "http3")]
+use quinn as _;
+#[cfg(feature = "http3")]
+use rcgen as _;
+
+#[cfg(feature = "http3")]
+/// Module containing HTTP/3 server types and configuration.
+pub mod http3 {
+	pub use crate::transport::http3::{CertificateConfig, Http3Config, Http3Server};
+}
 
 mod future;
 mod server;

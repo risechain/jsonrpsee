@@ -33,6 +33,7 @@ use std::task::Poll;
 
 use crate::traits::ToJson;
 
+use bytes::{Bytes, BytesMut};
 use futures_util::{Future, FutureExt};
 use http::Extensions;
 use jsonrpsee_types::error::{
@@ -518,18 +519,25 @@ impl Future for MethodResponseFuture {
 #[derive(Debug, Clone)]
 struct BoundedWriter {
 	max_len: usize,
-	buf: Vec<u8>,
+	buf: BytesMut,
 }
 
 impl BoundedWriter {
 	/// Create a new bounded writer.
 	pub fn new(max_len: usize) -> Self {
-		Self { max_len, buf: Vec::with_capacity(128) }
+		Self { max_len, buf: BytesMut::with_capacity(128) }
 	}
 
 	/// Consume the writer and extract the written bytes.
+	/// Returns a Vec<u8> for backward compatibility.
 	pub fn into_bytes(self) -> Vec<u8> {
-		self.buf
+		self.buf.to_vec()
+	}
+
+	#[allow(dead_code)]
+	/// Consume the writer and extract the written bytes as Bytes.
+	pub fn into_bytes_zero_copy(self) -> Bytes {
+		self.buf.freeze()
 	}
 }
 

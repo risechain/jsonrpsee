@@ -72,6 +72,7 @@ type Logger = tower::layer::util::Stack<RpcLoggerLayer, tower::layer::util::Iden
 ///     let client = HttpClientBuilder::default()
 ///          .set_headers(headers)
 ///          .build("http://localhost")
+///          .await
 ///          .unwrap();
 ///
 ///     // use client....
@@ -90,6 +91,12 @@ pub struct HttpClientBuilder<HttpMiddleware = Identity, RpcMiddleware = Logger> 
 	rpc_middleware: RpcServiceBuilder<RpcMiddleware>,
 	tcp_no_delay: bool,
 	max_concurrent_requests: Option<usize>,
+	#[cfg(feature = "http3")]
+	enable_http3: bool,
+	#[cfg(feature = "http3")]
+	http3_workload_profile: Option<crate::http3::WorkloadProfile>,
+	#[cfg(feature = "http3")]
+	http3_certificate_verification_mode: Option<crate::http3::CertificateVerificationMode>,
 }
 
 impl<HttpMiddleware, RpcMiddleware> HttpClientBuilder<HttpMiddleware, RpcMiddleware> {
@@ -114,6 +121,70 @@ impl<HttpMiddleware, RpcMiddleware> HttpClientBuilder<HttpMiddleware, RpcMiddlew
 	/// Set the maximum number of concurrent requests. Default disabled.
 	pub fn max_concurrent_requests(mut self, max_concurrent_requests: usize) -> Self {
 		self.max_concurrent_requests = Some(max_concurrent_requests);
+		self
+	}
+
+	///
+	/// This requires the `http3` feature to be enabled.
+	///
+	///
+	/// # Example
+	///
+	/// ```no_run
+	/// use jsonrpsee_http_client::HttpClientBuilder;
+	///
+	/// #[tokio::main]
+	/// async fn main() {
+	///     let client = HttpClientBuilder::default()
+	///         .enable_http3()
+	///         .build("http3://localhost:9944")
+	///         .await
+	///         .unwrap();
+	/// }
+	/// ```
+	#[cfg(feature = "http3")]
+	pub fn enable_http3(mut self) -> Self {
+		self.enable_http3 = true;
+		self
+	}
+
+	/// Set the HTTP/3 workload profile for optimized performance.
+	///
+	///
+	/// This requires the `http3` feature to be enabled.
+	///
+	/// # Example
+	///
+	/// ```no_run
+	/// use jsonrpsee_http_client::{HttpClientBuilder, http3::WorkloadProfile};
+	///
+	/// #[tokio::main]
+	/// async fn main() {
+	///     let client = HttpClientBuilder::default()
+	///         .enable_http3()
+	///         .with_http3_workload_profile(WorkloadProfile::HighThroughput)
+	///         .build("http3://localhost:9944")
+	///         .await
+	///         .unwrap();
+	/// }
+	/// ```
+	#[cfg(feature = "http3")]
+	pub fn with_http3_workload_profile(mut self, profile: crate::http3::WorkloadProfile) -> Self {
+		self.http3_workload_profile = Some(profile);
+		self
+	}
+
+	// Add this method to HttpClientBuilder
+	/// Configure the certificate verification mode for HTTP/3 connections.
+	///
+	/// - `Standard` (default): Verify certificates using the system trust store
+	/// - `AcceptSelfSigned`: Accept self-signed certificates (for testing)
+	/// - `NoVerification`: Skip certificate verification entirely (dangerous, testing only)
+	///
+	/// This requires the `http3` feature to be enabled.
+	#[cfg(feature = "http3")]
+	pub fn with_http3_certificate_verification(mut self, mode: crate::http3::CertificateVerificationMode) -> Self {
+		self.http3_certificate_verification_mode = Some(mode);
 		self
 	}
 
@@ -224,6 +295,12 @@ impl<HttpMiddleware, RpcMiddleware> HttpClientBuilder<HttpMiddleware, RpcMiddlew
 			request_timeout: self.request_timeout,
 			tcp_no_delay: self.tcp_no_delay,
 			max_concurrent_requests: self.max_concurrent_requests,
+			#[cfg(feature = "http3")]
+			enable_http3: self.enable_http3,
+			#[cfg(feature = "http3")]
+			http3_workload_profile: self.http3_workload_profile,
+			#[cfg(feature = "http3")]
+			http3_certificate_verification_mode: self.http3_certificate_verification_mode,
 		}
 	}
 
@@ -244,6 +321,12 @@ impl<HttpMiddleware, RpcMiddleware> HttpClientBuilder<HttpMiddleware, RpcMiddlew
 			request_timeout: self.request_timeout,
 			tcp_no_delay: self.tcp_no_delay,
 			max_concurrent_requests: self.max_concurrent_requests,
+			#[cfg(feature = "http3")]
+			enable_http3: self.enable_http3,
+			#[cfg(feature = "http3")]
+			http3_workload_profile: self.http3_workload_profile,
+			#[cfg(feature = "http3")]
+			http3_certificate_verification_mode: self.http3_certificate_verification_mode,
 		}
 	}
 }
@@ -259,22 +342,24 @@ where
 	B::Error: Into<BoxError>,
 {
 	/// Build the HTTP client with target to connect to.
-	pub fn build(self, target: impl AsRef<str>) -> Result<HttpClient<S2>, Error> {
-		let Self {
-			max_request_size,
-			max_response_size,
-			request_timeout,
-			#[cfg(feature = "tls")]
-			certificate_store,
-			id_kind,
-			headers,
-			service_builder,
-			tcp_no_delay,
-			rpc_middleware,
-			..
-		} = self;
+	pub async fn build(self, target: impl AsRef<str>) -> Result<HttpClient<S2>, Error> {
+		let max_request_size = self.max_request_size;
+		let max_response_size = self.max_response_size;
+		let request_timeout = self.request_timeout;
+		let id_kind = self.id_kind;
+		let headers = self.headers;
+		let service_builder = self.service_builder;
+		let tcp_no_delay = self.tcp_no_delay;
+		let rpc_middleware = self.rpc_middleware;
 
-		let http = HttpTransportClientBuilder {
+		#[cfg(feature = "tls")]
+		let certificate_store = self.certificate_store;
+
+		#[cfg(feature = "http3")]
+		let enable_http3 = self.enable_http3;
+
+		#[allow(unused_mut)]
+		let mut builder = HttpTransportClientBuilder {
 			max_request_size,
 			max_response_size,
 			headers,
@@ -282,9 +367,24 @@ where
 			service_builder,
 			#[cfg(feature = "tls")]
 			certificate_store,
+			#[cfg(feature = "http3")]
+			enable_http3,
+			#[cfg(feature = "http3")]
+			http3_workload_profile: self.http3_workload_profile,
+			#[cfg(feature = "http3")]
+			http3_certificate_verification_mode: self.http3_certificate_verification_mode,
+		};
+
+		#[cfg(feature = "http3")]
+		if enable_http3 {
+			builder = builder.enable_http3();
+
+			if let Some(profile) = self.http3_workload_profile {
+				builder = builder.with_http3_workload_profile(profile);
+			}
 		}
-		.build(target)
-		.map_err(|e| Error::Transport(e.into()))?;
+
+		let http = builder.build(target).await.map_err(|e| Error::Transport(e.into()))?;
 
 		let request_guard = self
 			.max_concurrent_requests
@@ -313,6 +413,12 @@ impl Default for HttpClientBuilder {
 			rpc_middleware: RpcServiceBuilder::default().rpc_logger(1024),
 			tcp_no_delay: true,
 			max_concurrent_requests: None,
+			#[cfg(feature = "http3")]
+			enable_http3: false,
+			#[cfg(feature = "http3")]
+			http3_workload_profile: None,
+			#[cfg(feature = "http3")]
+			http3_certificate_verification_mode: None,
 		}
 	}
 }

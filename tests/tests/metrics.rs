@@ -198,7 +198,7 @@ async fn http_server_logger() {
 	let (server_addr, server_handle) = http_server(test_module(), counter.clone()).await.unwrap();
 
 	let server_url = format!("http://{}", server_addr);
-	let client = HttpClientBuilder::default().build(&server_url).unwrap();
+	let client = HttpClientBuilder::default().build(&server_url).await.unwrap();
 
 	let res: String = client.request("say_hello", rpc_params![]).await.unwrap();
 	assert_eq!(res, "hello");

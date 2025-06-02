@@ -17,6 +17,27 @@ sudo sysctl -w kern.ipc.maxsockbuf=16777216
 In general, if you run into issues, it may be better to run this on a linux
 box; MacOS seems to hit limits quicker in general.
 
+## HTTP/3 Benchmarking Considerations
+
+HTTP/3 uses the QUIC protocol which runs over UDP. When benchmarking HTTP/3:
+
+1. **UDP Permissions**: Some environments restrict UDP traffic or require special permissions
+2. **Certificate Verification**: HTTP/3 requires TLS, and our benchmarks use self-signed certificates
+3. **Resource Limits**: You may need to increase UDP buffer sizes:
+
+   ```sh
+   sudo sysctl -w net.core.rmem_max=2500000
+   sudo sysctl -w net.core.wmem_max=2500000
+   ```
+
+4. **Firewall Settings**: Ensure UDP traffic is allowed on the benchmark ports
+
+For more reliable HTTP/3 benchmarks, consider using the dedicated script:
+
+```sh
+./scripts/bench_http.sh
+```
+
 ## Run all benchmarks
 
 `$ cargo bench`
@@ -24,6 +45,10 @@ box; MacOS seems to hit limits quicker in general.
 It's also possible to run individual benchmarks by:
 
 `$ cargo bench --bench bench jsonrpsee_types_v2_array_ref`
+
+## Run HTTP/3 benchmarks
+
+`$ cargo bench --features http3 -- http3`
 
 ## Run all benchmarks against [jsonrpc crate servers](https://github.com/paritytech/jsonrpc/)
 
